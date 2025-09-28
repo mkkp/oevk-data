@@ -8,3 +8,5 @@ env/
 venv/
 src/data/staging
 src/data/oevk.db
+/data/staging.test/Korzet_allomany_orszagos.zip
+/data/oevk.test.db.wal

@@ -237,16 +237,16 @@ def transform_addresses(db_connection: duckdb.DuckDBPyConnection, run_tag: str) 
             NationalIndividualElectoralDistrict_ID
         )
         SELECT 
-            hash_address_id({
-                'county_code': county_code,
-                'settlement_code': settlement_code,
-                'public_space_name': street_name,
-                'public_space_type': street_type,
-                'house_number': house_number,
-                'building': building,
-                'staircase': staircase,
-                'postal_code': CAST(postal_code AS VARCHAR)
-            }) as ID,
+            hash_address_id(
+                county_code,
+                settlement_code,
+                street_name,
+                COALESCE(street_type, ''),
+                house_number,
+                building,
+                staircase,
+                CAST(postal_code AS VARCHAR)
+            ) as ID,
             ROW_NUMBER() OVER (ORDER BY county_code, settlement_code, oevk_code, tevk_code, postal_code, 
                                street_name, street_type, house_number, building, staircase) as Sequence,
             TRIM(CONCAT_WS(' ', street_name, street_type, house_number, 
@@ -268,7 +268,20 @@ def transform_addresses(db_connection: duckdb.DuckDBPyConnection, run_tag: str) 
             hash_oevk_id(county_code, oevk_code) as NationalIndividualElectoralDistrict_ID
         FROM staging_korzet
         WHERE run_tag = ?
-        ON CONFLICT (ID) DO NOTHING
+        ON CONFLICT (ID) DO UPDATE SET
+            Sequence = EXCLUDED.Sequence,
+            FullAddress = EXCLUDED.FullAddress,
+            PublicSpaceName = EXCLUDED.PublicSpaceName,
+            PublicSpaceType = EXCLUDED.PublicSpaceType,
+            HouseNumber = EXCLUDED.HouseNumber,
+            Building = EXCLUDED.Building,
+            Staircase = EXCLUDED.Staircase,
+            PostalCode_ID = EXCLUDED.PostalCode_ID,
+            PollingStation_ID = EXCLUDED.PollingStation_ID,
+            SettlementIndividualElectoralDistrict_ID = EXCLUDED.SettlementIndividualElectoralDistrict_ID,
+            County_ID = EXCLUDED.County_ID,
+            Settlement_ID = EXCLUDED.Settlement_ID,
+            NationalIndividualElectoralDistrict_ID = EXCLUDED.NationalIndividualElectoralDistrict_ID
     """, [run_tag])
     
     row_count = db_connection.execute("SELECT COUNT(*) FROM Address").fetchone()[0]
@@ -292,7 +305,9 @@ def transform_postal_code_settlement_relationships(db_connection: duckdb.DuckDBP
         FROM staging_korzet
         WHERE run_tag = ? AND postal_code IS NOT NULL AND postal_code != 0
         GROUP BY postal_code, county_code, settlement_code
-        ON CONFLICT (ID) DO NOTHING
+        ON CONFLICT (ID) DO UPDATE SET
+            PostalCode_ID = EXCLUDED.PostalCode_ID,
+            Settlement_ID = EXCLUDED.Settlement_ID
     """, [run_tag])
     
     row_count = db_connection.execute("SELECT COUNT(*) FROM PostalCode_Settlement").fetchone()[0]

@@ -41,7 +41,7 @@ This application transforms Hungarian electoral address data from two authoritat
 
 3. **Run the complete pipeline**
    ```bash
-   python src/cli.py run-all --run-tag $(date +%Y%m%d)
+   python src/cli.py run --run-tag $(date +%Y%m%d)
    ```
 
 ### Directory Structure
@@ -66,21 +66,78 @@ oevk-data/
 
 ## Usage
 
-### Command Line Interface
+### Running the Transform Locally
 
-The main entry point is `src/cli.py` which provides several commands:
+To run the complete data transformation pipeline locally:
 
 ```bash
-# Run complete pipeline
-python src/cli.py run-all --run-tag 20250928
+# Run complete pipeline with default settings
+python src/cli.py run
 
-# Run individual steps
-python src/cli.py ingest --run-tag 20250928
-python src/cli.py transform --run-tag 20250928
-python src/cli.py export --run-tag 20250928
+# Run with custom database and output directories
+python src/cli.py run --db-path data/oevk.db --output-dir exports/ --staging-dir data/staging/
 
-# Show help
-python src/cli.py --help
+# Run only specific stages
+python src/cli.py run --stages ingest,transform,export
+python src/cli.py run --stages transform  # Only transformation stage
+
+# Run with custom run tag
+python src/cli.py run --run-tag $(date +%Y%m%d_%H%M%S)
+
+# Show all available options
+python src/cli.py run --help
+```
+
+### Pipeline Stages
+
+The pipeline consists of three main stages:
+
+1. **Ingest**: Download source data and load into staging tables
+2. **Transform**: Process staging data into normalized target tables
+3. **Export**: Generate CSV files from target tables
+
+### Transformation Stage Details
+
+When running the transformation stage locally, the pipeline:
+
+- **Processes 3M+ rows** from staging data
+- **Creates 8 normalized tables** with referential integrity
+- **Generates deterministic hash IDs** using xxhash64
+- **Handles conflicts** with `ON CONFLICT DO UPDATE` for idempotent processing
+- **Tracks performance metrics** including timing and row counts
+- **Validates NFR-002 compliance** (30-minute processing target)
+
+### Expected Output
+
+After successful transformation, you should see:
+
+```
+County: 40 rows
+Settlement: 6,354 rows  
+NationalIndividualElectoralDistrict: 212 rows
+SettlementIndividualElectoralDistrict: 9,354 rows
+PollingStation: 17,110 rows
+Address: 3,336,202 rows
+PostalCode: 3,106 rows
+PostalCode_Settlement: 6,354 rows
+```
+
+### Performance Monitoring
+
+The pipeline includes comprehensive performance tracking:
+
+- **Step timing**: Individual stage durations
+- **Row counts**: Records processed per stage
+- **Processing rate**: Rows per second
+- **NFR-002 validation**: 30-minute target compliance check
+
+Example output:
+```
+=== PIPELINE PERFORMANCE SUMMARY ===
+Total duration: 847.23 seconds
+Total rows processed: 3,336,202
+Processing rate: 3,937.45 rows/second
+✅ NFR-002 COMPLIANT: Pipeline completed in 847.23s (target: ≤1800s)
 ```
 
 ### Configuration
@@ -140,6 +197,161 @@ The pipeline transforms source data into 8 normalized tables:
 6. **PostalCode_Settlement** - Junction table for postal code-settlement relationships
 7. **PollingStation** (`szavazókör`) - Voting locations
 8. **Address** (`cím`) - Individual addresses with electoral assignments
+
+### Data Structure Diagram
+
+```mermaid
+erDiagram
+    County ||--o{ Settlement : contains
+    County ||--o{ NationalIndividualElectoralDistrict : contains
+    Settlement ||--o{ SettlementIndividualElectoralDistrict : contains
+    NationalIndividualElectoralDistrict ||--o{ SettlementIndividualElectoralDistrict : contains
+    SettlementIndividualElectoralDistrict ||--o{ PollingStation : contains
+    PollingStation ||--o{ Address : contains
+    PostalCode ||--o{ PostalCode_Settlement : has
+    Settlement ||--o{ PostalCode_Settlement : has
+    PostalCode ||--o{ Address : assigned
+    
+    County {
+        string ID PK "xxhash64(CountyCode)"
+        string CountyCode UK
+        string CountyName
+    }
+    Settlement {
+        string ID PK "xxhash64(CountyCode|SettlementCode)"
+        string SettlementCode
+        string SettlementName
+        string County_ID FK
+    }
+    NationalIndividualElectoralDistrict {
+        string ID PK "xxhash64(CountyCode|OEVK)"
+        string OEVK
+        string Name
+        string Center
+        string Polygon
+        string County_ID FK
+    }
+    SettlementIndividualElectoralDistrict {
+        string ID PK "xxhash64(CountyCode|SettlementCode|TEVK|OEVK)"
+        string TEVK
+        string Name
+        string County_ID FK
+        string Settlement_ID FK
+        string NationalIndividualElectoralDistrict_ID FK
+    }
+    PostalCode {
+        string ID PK "xxhash64(PostalCode)"
+        string PostalCode UK
+    }
+    PostalCode_Settlement {
+        string ID PK "xxhash64(PostalCode_ID|Settlement_ID)"
+        string PostalCode_ID FK
+        string Settlement_ID FK
+    }
+    PollingStation {
+        string ID PK "xxhash64(CountyCode|SettlementCode|OEVK|TEVK|PollingStationAddress)"
+        string PollingStationAddress
+        string SettlementIndividualElectoralDistrict_ID FK
+        string County_ID FK
+        string Settlement_ID FK
+        string NationalIndividualElectoralDistrict_ID FK
+    }
+    Address {
+        string ID PK "xxhash64(address components)"
+        integer Sequence
+        string FullAddress
+        string PublicSpaceName
+        string PublicSpaceType
+        string HouseNumber
+        string Building
+        string Staircase
+        string PostalCode_ID FK
+        string PollingStation_ID FK
+        string SettlementIndividualElectoralDistrict_ID FK
+        string County_ID FK
+        string Settlement_ID FK
+        string NationalIndividualElectoralDistrict_ID FK
+    }
+```
+
+### Transformation Flow
+
+```mermaid
+flowchart TD
+    A[Source Data] --> B[Ingestion]
+    B --> C[Staging Tables]
+    C --> D[Transformation]
+    D --> E[Normalized Tables]
+    E --> F[Export]
+    F --> G[CSV Files]
+    
+    subgraph A [Source Data]
+        A1[oevk.json<br/>OEVK boundaries]
+        A2[Korzet_allomany_orszagos.zip<br/>Address data]
+    end
+    
+    subgraph B [Ingestion]
+        B1[Download Sources]
+        B2[Extract & Load]
+        B3[Create Staging Tables]
+    end
+    
+    subgraph C [Staging Tables]
+        C1[staging_korzet<br/>Raw address data]
+        C2[staging_oevk<br/>OEVK boundaries]
+    end
+    
+    subgraph D [Transformation]
+        D1[County & Settlement]
+        D2[OEVK & TEVK]
+        D3[Postal Codes]
+        D4[Polling Stations]
+        D5[Addresses]
+        D6[Relationships]
+    end
+    
+    subgraph E [Normalized Tables]
+        E1[County]
+        E2[Settlement]
+        E3[NationalIndividualElectoralDistrict]
+        E4[SettlementIndividualElectoralDistrict]
+        E5[PostalCode]
+        E6[PostalCode_Settlement]
+        E7[PollingStation]
+        E8[Address]
+    end
+    
+    subgraph F [Export]
+        F1[Consolidated CSVs]
+        F2[Partitioned Addresses]
+    end
+    
+    subgraph G [CSV Files]
+        G1[Entity CSVs<br/>County, Settlement, etc.]
+        G2[Settlement-partitioned<br/>Address files]
+    end
+    
+    D1 --> E1
+    D1 --> E2
+    D2 --> E3
+    D2 --> E4
+    D3 --> E5
+    D6 --> E6
+    D4 --> E7
+    D5 --> E8
+    
+    E1 --> F1
+    E2 --> F1
+    E3 --> F1
+    E4 --> F1
+    E5 --> F1
+    E6 --> F1
+    E7 --> F1
+    E8 --> F2
+    
+    F1 --> G1
+    F2 --> G2
+```
 
 ### Key Relationships
 

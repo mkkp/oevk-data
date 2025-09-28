@@ -114,36 +114,38 @@ def hash_polling_station_id(
     return xxhash.xxh64(data).hexdigest()
 
 
-def hash_address_id(address_components: dict) -> str:
+def hash_address_id(
+    county_code: str,
+    settlement_code: str,
+    public_space_name: str,
+    public_space_type: str,
+    house_number: str,
+    building: str,
+    staircase: str,
+    postal_code: str
+) -> str:
     """Generate hash ID for Address entity.
     
     Args:
-        address_components: Dictionary containing address components:
-            - county_code: The unique county code
-            - settlement_code: The unique settlement code
-            - public_space_name: Public space name
-            - public_space_type: Public space type
-            - house_number: House number
-            - building: Building identifier (can be None)
-            - staircase: Staircase identifier (can be None)
-            - postal_code: Postal code
+        county_code: The unique county code
+        settlement_code: The unique settlement code
+        public_space_name: Public space name
+        public_space_type: Public space type
+        house_number: House number
+        building: Building identifier (can be None)
+        staircase: Staircase identifier (can be None)
+        postal_code: Postal code
         
     Returns:
         Hexadecimal string representation of xxhash64 digest
     """
-    # Extract components with None handling
-    county_code = address_components.get('county_code', '')
-    settlement_code = address_components.get('settlement_code', '')
-    public_space_name = address_components.get('public_space_name', '')
-    public_space_type = address_components.get('public_space_type', '')
-    house_number = address_components.get('house_number', '')
-    building = str(address_components.get('building', '')) if address_components.get('building') is not None else ""
-    staircase = str(address_components.get('staircase', '')) if address_components.get('staircase') is not None else ""
-    postal_code = address_components.get('postal_code', '')
+    # Handle None values
+    building_str = str(building) if building is not None else ""
+    staircase_str = str(staircase) if staircase is not None else ""
     
     data = (
         f"{county_code}|{settlement_code}|{public_space_name}|{public_space_type}|"
-        f"{house_number}|{building}|{staircase}|{postal_code}"
+        f"{house_number}|{building_str}|{staircase_str}|{postal_code}"
     ).encode('utf-8')
 
     return xxhash.xxh64(data).hexdigest()
