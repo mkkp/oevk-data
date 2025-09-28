@@ -39,9 +39,9 @@ This project will create a transformer program to download Hungarian electoral a
 **Testing**: pytest
 **Target Platform**: Linux/macOS command-line application
 **Project Type**: single (data processing application)
-**Performance Goals**: Process >3M rows in a typical batch window (< 1 hour).
+**Performance Goals**: Process >3M rows in under 30 minutes (NFR-002 target).
 **Constraints**: Must preserve Hungarian diacritics. Operations must be idempotent.
-**Scale/Scope**: ~3M rows from CSV, ~108 records from JSON, 8 target entities.
+**Scale/Scope**: ~3.34M rows from CSV, ~108 records from JSON, 8 target entities. Achieved performance: ~2.5 minutes with parallel processing.
 **Source URLs**:
 -   `https://static.valasztas.hu/dyn/oevk_data/oevk.json`
 -   `https://static.valasztas.hu/dyn/oevk_data/Korzet_allomany_orszagos.zip`

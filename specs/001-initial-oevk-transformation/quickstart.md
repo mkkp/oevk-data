@@ -36,9 +36,16 @@ python src/cli.py ingest --run-tag $(date +%Y%m%d)
 ```
 
 ### Step 2: Transform Data
-This command reads from the staging tables and populates the 8 normalized target tables using the logic from the functional specification.
+This command reads from the staging tables and populates the 8 normalized target tables using the logic from the functional specification. The transformation supports parallel processing for optimal performance.
 ```bash
+# Standard transformation
 python src/cli.py transform --run-tag $(date +%Y%m%d)
+
+# With parallel processing (recommended for large datasets)
+python src/cli.py transform --run-tag $(date +%Y%m%d) --parallel
+
+# With custom chunk size and worker threads
+python src/cli.py transform --run-tag $(date +%Y%m%d) --parallel --chunk-size 50000 --max-workers 4
 ```
 
 ### Step 3: Export Data

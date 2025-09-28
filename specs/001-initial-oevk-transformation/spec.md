@@ -83,10 +83,12 @@ As a data analyst, I need to transform Hungarian electoral address data from aut
 - **FR-011**: System MUST automatically extract the CSV file from the downloaded ZIP archive.
 - **FR-012**: System MUST move any records that fail validation during the transformation process to a dedicated "rejects" table for later analysis, and the process MUST continue with the next valid records.
 - **FR-013**: System MUST delete all existing data from all target tables before initiating the transformation process to ensure idempotency.
+- **FR-014**: System MUST support parallel processing of data chunks using ThreadPoolExecutor with configurable worker threads for optimal performance.
 
 ### Non-Functional Requirements
 - **NFR-001**: The system MUST log its operational status at the `INFO` level during a normal, successful run.
 - **NFR-002**: The end-to-end ETL process (ingest, transform, export) for a 3 million row dataset MUST complete in under 30 minutes on a standard cloud VM (e.g., 4-core, 16GB RAM).
+- **NFR-003**: The system MUST support parallel processing of data chunks using ThreadPoolExecutor for optimal performance.
 
 ### Key Entities *(include if feature involves data)*
 - **County**: Represents Hungarian counties with unique codes and names

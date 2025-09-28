@@ -109,23 +109,30 @@ class TestHashingFunctions:
 
     def test_hash_address_id(self):
         """Test address ID hashing."""
-        address_components = {
-            "county_code": "01",
-            "settlement_code": "001",
-            "public_space_name": "Main Street",
-            "public_space_type": "utca",
-            "house_number": "1",
-            "building": None,
-            "staircase": None,
-            "postal_code": "1011"
-        }
-        
-        result = hash_address_id(address_components)
+        result = hash_address_id(
+            county_code="01",
+            settlement_code="001", 
+            public_space_name="Main Street",
+            public_space_type="utca",
+            house_number="1",
+            building="",
+            staircase="",
+            postal_code="1011"
+        )
         
         assert isinstance(result, str)
         assert len(result) == 16
         # Test that the same input produces the same output
-        assert result == hash_address_id(address_components)
+        assert result == hash_address_id(
+            county_code="01",
+            settlement_code="001", 
+            public_space_name="Main Street",
+            public_space_type="utca",
+            house_number="1",
+            building="",
+            staircase="",
+            postal_code="1011"
+        )
 
     def test_hashing_deterministic(self):
         """Test that hashing produces the same result for same inputs."""
