@@ -280,6 +280,9 @@ def transform_addresses(db_connection: duckdb.DuckDBPyConnection, run_tag: str) 
         chunk_start_time = time.time()
         offset = chunk_num * chunk_size
         
+        # Calculate global OriginalOrder starting from offset + 1
+        global_order_start = offset + 1
+        
         # Extract addresses from Korzet CSV in chunks using simpler approach
         db_connection.execute("""
             INSERT INTO Address (
@@ -301,8 +304,8 @@ def transform_addresses(db_connection: duckdb.DuckDBPyConnection, run_tag: str) 
                 ) as ID,
                 ROW_NUMBER() OVER (ORDER BY county_code, settlement_code, oevk_code, tevk_code, postal_code, 
                                    street_name, street_type, house_number, building, staircase) as Sequence,
-                ROW_NUMBER() OVER (ORDER BY county_code, settlement_code, oevk_code, tevk_code, postal_code, 
-                                   street_name, street_type, house_number, building, staircase) as OriginalOrder,
+                ? + ROW_NUMBER() OVER (ORDER BY county_code, settlement_code, oevk_code, tevk_code, postal_code, 
+                                      street_name, street_type, house_number, building, staircase) - 1 as OriginalOrder,
                 TRIM(CONCAT_WS(' ', street_name, street_type, house_number, 
                               COALESCE(building, ''), COALESCE(staircase, ''))) as FullAddress,
                 street_name as PublicSpaceName,
@@ -342,7 +345,7 @@ def transform_addresses(db_connection: duckdb.DuckDBPyConnection, run_tag: str) 
                 County_ID = EXCLUDED.County_ID,
                 Settlement_ID = EXCLUDED.Settlement_ID,
                 NationalIndividualElectoralDistrict_ID = EXCLUDED.NationalIndividualElectoralDistrict_ID
-        """, [run_tag, chunk_size, offset])
+        """, [global_order_start, run_tag, chunk_size, offset])
         
         # Calculate timing metrics
         chunk_end_time = time.time()
