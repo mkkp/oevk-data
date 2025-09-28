@@ -11,11 +11,14 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
+# Add src directory to Python path
+sys.path.insert(0, str(project_root / 'src'))
+
 import duckdb
 
 from src.database.connection import get_database_connection
 from src.etl.ingest import download_sources, load_staging_data
-from src.etl.transform import transform_all
+from src.etl.transform_optimized import transform_all_optimized
 from src.etl.export import export_tables_to_csv, export_addresses_partitioned
 from src.utils.logging import get_logger, PipelineMetrics, setup_logging
 
@@ -54,6 +57,12 @@ Examples:
                           help='Comma-separated list of stages to run (default: all)')
     run_parser.add_argument('--run-tag', 
                           help='Custom run tag (default: timestamp)')
+    run_parser.add_argument('--chunk-size', type=int, default=50000,
+                          help='Chunk size for address transformation (default: 50000)')
+    run_parser.add_argument('--no-parallel', action='store_true',
+                          help='Disable parallel processing (default: parallel enabled)')
+    run_parser.add_argument('--no-optimized', action='store_true',
+                          help='Use original transformation instead of optimized (default: optimized enabled)')
     
     args = parser.parse_args()
     
@@ -115,6 +124,9 @@ def run_pipeline(args):
             logger.info("=== TRANSFORMATION STAGE ===")
             metrics.log_step_start("transform")
             
+            # Log optimization settings
+            logger.info(f"Optimization settings: chunk_size={args.chunk_size}, parallel={not args.no_parallel}")
+            
             # Get row counts before transformation
             target_counts_before = {}
             target_tables = ['County', 'Settlement', 'NationalIndividualElectoralDistrict', 
@@ -123,7 +135,12 @@ def run_pipeline(args):
             for table in target_tables:
                 target_counts_before[table] = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
             
-            transform_all(conn, run_tag)
+            # Use optimized transformation with configurable chunk size and parallel processing
+            if hasattr(args, 'no_optimized') and args.no_optimized:
+                from src.etl.transform import transform_all
+                transform_all(conn, run_tag)
+            else:
+                transform_all_optimized(conn, run_tag, chunk_size=args.chunk_size, parallel=not args.no_parallel, db_path=args.db_path)
             
             # Get row counts after transformation and calculate deltas
             total_rows_transformed = 0

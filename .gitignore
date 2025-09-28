@@ -9,6 +9,7 @@ venv/
 /**/Korzet_levalogatas*.csv
 /**/Korzet_allomany_orszagos.zip
 **/oevk.json
+**/*.duckdb
 **/*.db
 **/*.db.wal
 /test_*.py
