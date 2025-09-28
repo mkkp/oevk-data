@@ -83,9 +83,9 @@ Each element contains:
 ## 4) Target Logical Model
 
 ### 4.1 Entities & Attributes (from requirements)
-- **County** (`ID` PK, `CountyCode` UC, `CountyName`)
-- **Settlement** (`ID` PK, `SettlementCode` UC, `SettlementName`, `County_ID` FK)
-- **NationalIndividualElectoralDistrict** (`ID` PK, `OEVK` UC, `Name`, `Center`, `Polygon`, `County_ID` FK)
+- **County** (`ID` PK, `CountyCode`, `CountyName`)
+- **Settlement** (`ID` PK, `SettlementCode`, `SettlementName`, `County_ID` FK)
+- **NationalIndividualElectoralDistrict** (`ID` PK, `OEVK`, `Name`, `Center`, `Polygon`, `County_ID` FK)
 - **SettlementIndividualElectoralDistrict** (`ID` PK, `TEVK`, `Name`, `County_ID` FK, `Settlement_ID` FK, `NationalIndividualElectoralDistrict_ID` FK)
 - **PostalCode** (`ID` PK, `PostalCode`)
 - **PostalCode_Settlement** (`ID` PK, `PostalCode_ID` FK, `Settlement_ID` FK)
@@ -108,18 +108,18 @@ erDiagram
 
   County {
     string ID PK
-    string CountyCode UC
+    string CountyCode
     string CountyName
   }
   Settlement {
     string ID PK
-    string SettlementCode UC
+    string SettlementCode
     string SettlementName
     string County_ID FK
   }
   NationalIndividualElectoralDistrict {
     string ID PK
-    string OEVK UC
+    string OEVK
     string Name
     string Center
     string Polygon
@@ -199,7 +199,7 @@ To guarantee idempotence, compute **string IDs** as `SHA1`/`xxhash64` hex of sta
 > This removes dependency on database sequences and makes exports stable across reruns.
 
 ### 5.4 Uniqueness
-- UC: `CountyCode` (County), `SettlementCode` (Settlement), `OEVK` (National OEVK), `PostalCode` (PostalCode).
+-: `CountyCode` (County), `SettlementCode` (Settlement), `OEVK` (National OEVK), `PostalCode` (PostalCode).
 - Composite uniqueness enforced via hash IDs above.
 
 ### 5.5 Normalization rules
@@ -362,6 +362,17 @@ CREATE TABLE IF NOT EXISTS Address (
 - Trim; map `""` → `NULL`.
 - Normalize whitespace (single spaces).
 - Preserve diacritics and original casing.
+
+### 9.10 Enhanced Address Transformation with Chunked Processing
+- **Chunk Size**: 10,000 records per chunk for optimal memory management
+- **Timing Metrics**: Real-time progress tracking with:
+  - Elapsed time per chunk
+  - Estimated total time
+  - Time remaining (ETA)
+  - Progress percentage calculations
+- **Human-readable Time Formatting**: Automatic conversion between seconds, minutes, and hours
+- **OriginalOrder Field**: Maintains original sequence ordering for data lineage
+- **Performance**: Designed for 3.3M+ address records (333 chunks at 10,000 records each)
 
 ### 9.2 County
 ```

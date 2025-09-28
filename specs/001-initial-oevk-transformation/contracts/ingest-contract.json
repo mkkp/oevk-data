@@ -1,0 +1,50 @@
+{
+  "module": "src.etl.ingest",
+  "functions": [
+    {
+      "name": "download_sources",
+      "purpose": "Downloads the OEVK JSON and the Address ZIP file from their source URLs.",
+      "parameters": [
+        {
+          "name": "sources",
+          "type": "Dict[str, str]",
+          "description": "A dictionary containing the URLs for 'oevk_json' and 'korzet_zip'."
+        },
+        {
+          "name": "staging_dir",
+          "type": "str",
+          "description": "The directory path to save the downloaded files."
+        }
+      ],
+      "returns": {
+        "type": "Dict[str, str]",
+        "description": "A dictionary with the local file paths for 'oevk_json' and 'korzet_zip'."
+      }
+    },
+    {
+      "name": "load_staging_data",
+      "purpose": "Loads the downloaded and unzipped data into staging tables in DuckDB.",
+      "parameters": [
+        {
+          "name": "db_connection",
+          "type": "duckdb.DuckDBPyConnection",
+          "description": "An active DuckDB connection."
+        },
+        {
+          "name": "file_paths",
+          "type": "Dict[str, str]",
+          "description": "A dictionary with local paths to 'oevk_json' and the unzipped address CSV."
+        },
+        {
+          "name": "run_tag",
+          "type": "str",
+          "description": "A tag (e.g., timestamp) to identify the current run in the staging tables."
+        }
+      ],
+      "returns": {
+        "type": "None",
+        "description": "This function does not return a value but populates staging tables."
+      }
+    }
+  ]
+}

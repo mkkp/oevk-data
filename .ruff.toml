@@ -1,0 +1,12 @@
+line-length = 88
+target-version = "py311"
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]
+
+[format]
+quote-style = "double"
+indent-style = "space"
+
+[per-file-ignores]
+"__init__.py" = ["F401"]
+"tests/**/*.py" = ["S101"]

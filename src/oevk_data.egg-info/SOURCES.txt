@@ -1,0 +1,7 @@
+pyproject.toml
+setup.py
+src/oevk_data.egg-info/PKG-INFO
+src/oevk_data.egg-info/SOURCES.txt
+src/oevk_data.egg-info/dependency_links.txt
+src/oevk_data.egg-info/requires.txt
+src/oevk_data.egg-info/top_level.txt

@@ -1,0 +1,4 @@
+polars>=0.20.0
+duckdb>=0.10.0
+xxhash>=3.4.0
+requests>=2.31.0
