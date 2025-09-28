@@ -6,3 +6,5 @@
 .Python
 env/
 venv/
+src/data/staging
+src/data/oevk.db

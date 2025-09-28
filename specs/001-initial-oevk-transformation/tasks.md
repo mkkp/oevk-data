@@ -40,10 +40,10 @@ This document outlines the tasks required to implement the OEVK data transformat
 
 ## Phase 5: Polish and Finalization
 
--   **T018**: **Add Configuration**: Implement `src/utils/config.py` to manage settings like URLs, file paths, and chunk sizes.
--   **T019**: **Refine Logging**: Enhance the logging in `src/utils/logging.py` and across the application to provide clear, structured output for each stage of the pipeline. Logs MUST include start/end times, source file details, row counts for each transformation step, and paths to exported files, in alignment with the constitution.
--   **T020**: **Add README**: Create a `README.md` at the project root with detailed instructions on how to set up, configure, and run the application.
--   **T021**: **[P]** **Validate Performance**: After implementation, run the full pipeline on the sample 3M row dataset and measure the execution time to ensure it meets the NFR-002 target of < 30 minutes.
+-   [X] **T018**: **Add Configuration**: Implement `src/utils/config.py` to manage settings like URLs, file paths, and chunk sizes.
+-   [X] **T019**: **Refine Logging**: Enhance the logging in `src/utils/logging.py` and across the application to provide clear, structured output for each stage of the pipeline. Logs MUST include start/end times, source file details, row counts for each transformation step, and paths to exported files, in alignment with the constitution.
+-   [X] **T020**: **Add README**: Create a `README.md` at the project root with detailed instructions on how to set up, configure, and run the application.
+-   [X] **T021**: **[P]** **Validate Performance**: After implementation, run the full pipeline on the sample 3M row dataset and measure the execution time to ensure it meets the NFR-002 target of < 30 minutes.
 
 ## Parallel Execution Example
 

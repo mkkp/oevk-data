@@ -43,6 +43,12 @@ def apply_schema(conn: duckdb.DuckDBPyConnection) -> None:
     # Read the schema file
     schema_path = os.path.join(os.path.dirname(__file__), 'schema.sql')
     
+    # If running from src directory, adjust path
+    if not os.path.exists(schema_path):
+        # Try from project root
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        schema_path = os.path.join(project_root, 'src', 'database', 'schema.sql')
+    
     if not os.path.exists(schema_path):
         logger.error(f"Schema file not found at {schema_path}")
         raise FileNotFoundError(f"Schema file not found at {schema_path}")

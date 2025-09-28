@@ -127,13 +127,20 @@ def load_staging_data(db_connection: duckdb.DuckDBPyConnection,
     if korzet_csv_path and os.path.exists(korzet_csv_path):
         logger.info(f"Loading Korzet CSV data from {korzet_csv_path}")
 
-        # Load CSV data into a temporary table
+        # Load CSV data into a temporary table - skip header to avoid BOM issues
         db_connection.execute("""
             CREATE TEMPORARY TABLE temp_korzet AS
-            SELECT * FROM read_csv(?, header=true, delim=';', ignore_errors=true, sample_size=-1)
+            SELECT * FROM read_csv(?, 
+                header=false, 
+                delim=';', 
+                ignore_errors=true, 
+                sample_size=-1,
+                encoding='UTF-8',
+                skip=1
+            )
         """, [korzet_csv_path])
 
-        # Insert into staging table with run_tag
+        # Insert into staging table with run_tag - use column positions to avoid BOM issues
         db_connection.execute("""
             INSERT INTO staging_korzet (
                 run_tag, county_code, county_name, oevk_code, settlement_code, 
@@ -141,10 +148,17 @@ def load_staging_data(db_connection: duckdb.DuckDBPyConnection,
                 counting_designated, accessible, postal_code, street_name, street_type,
                 house_number, building, staircase, gate_code, additional_info
             )
-            SELECT ?, "Vármegye kód", "Vármegye", "OEVK", "Település kód", 
-                   "Település", "TEVK", "Szavazókör", "Szavazókör cím",
-                   "Számlálásra kijelölt", "Akadálymentesített", "PIR", "Közterület név", "Közterület jelleg",
-                   "Házszám", "Épület", "Lépcsőház", "Kapukód", "column17"
+            SELECT ?, 
+                   trim(both '\"' from column00), trim(both '\"' from column01), 
+                   trim(both '\"' from column02), trim(both '\"' from column03), 
+                   trim(both '\"' from column04), trim(both '\"' from column05), 
+                   trim(both '\"' from column06), trim(both '\"' from column07),
+                   trim(both '\"' from column08), trim(both '\"' from column09), 
+                   CASE WHEN column10 = '' THEN NULL ELSE trim(both '\"' from column10) END,  -- postal_code
+                   trim(both '\"' from column11), trim(both '\"' from column12),
+                   trim(both '\"' from column13), trim(both '\"' from column14), 
+                   trim(both '\"' from column15), trim(both '\"' from column16), 
+                   trim(both '\"' from column17)
             FROM temp_korzet
         """, [run_tag])
 
@@ -188,7 +202,7 @@ def create_staging_tables(db_connection: duckdb.DuckDBPyConnection) -> None:
             polling_station_address TEXT,
             counting_designated TEXT,
             accessible TEXT,
-            postal_code INTEGER,
+            postal_code TEXT,
             street_name TEXT,
             street_type TEXT,
             house_number TEXT,
