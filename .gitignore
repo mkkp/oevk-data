@@ -12,3 +12,4 @@ venv/
 **/*.db
 **/*.db.wal
 /test_*.py
+*.csv

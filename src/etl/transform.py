@@ -72,7 +72,33 @@ def apply_target_schema(db_connection: duckdb.DuckDBPyConnection) -> None:
     
     # Execute the schema creation
     db_connection.execute(schema_sql)
+    
+    # Check for missing columns and add them (schema migration)
+    migrate_schema(db_connection)
+    
     logger.info("Target schema applied successfully")
+
+
+def migrate_schema(db_connection: duckdb.DuckDBPyConnection) -> None:
+    """Migrate existing schema by adding missing columns."""
+    logger.info("Checking for schema migrations")
+    
+    # Check if Address table has OriginalOrder column
+    try:
+        result = db_connection.execute("PRAGMA table_info(Address)").fetchall()
+        has_original_order = any(col[1] == 'OriginalOrder' for col in result)
+        
+        if not has_original_order:
+            logger.info("Adding OriginalOrder column to Address table")
+            # First add the column without constraints
+            db_connection.execute("ALTER TABLE Address ADD COLUMN OriginalOrder INTEGER")
+            # Then set default value for existing rows
+            db_connection.execute("UPDATE Address SET OriginalOrder = 0 WHERE OriginalOrder IS NULL")
+            logger.info("OriginalOrder column added successfully")
+    except Exception as e:
+        logger.warning(f"Could not check/update Address table schema: {e}")
+    
+    logger.info("Schema migration check completed")
 
 
 def transform_counties(db_connection: duckdb.DuckDBPyConnection, run_tag: str) -> None:
