@@ -86,6 +86,7 @@ As a data analyst, I need to transform Hungarian electoral address data from aut
 
 ### Non-Functional Requirements
 - **NFR-001**: The system MUST log its operational status at the `INFO` level during a normal, successful run.
+- **NFR-002**: The end-to-end ETL process (ingest, transform, export) for a 3 million row dataset MUST complete in under 30 minutes on a standard cloud VM (e.g., 4-core, 16GB RAM).
 
 ### Key Entities *(include if feature involves data)*
 - **County**: Represents Hungarian counties with unique codes and names
