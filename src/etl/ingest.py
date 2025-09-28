@@ -130,13 +130,22 @@ def load_staging_data(db_connection: duckdb.DuckDBPyConnection,
         # Load CSV data into a temporary table
         db_connection.execute("""
             CREATE TEMPORARY TABLE temp_korzet AS
-            SELECT * FROM read_csv(?, header=true, delim=';', ignore_errors=true)
+            SELECT * FROM read_csv(?, header=true, delim=';', ignore_errors=true, sample_size=-1)
         """, [korzet_csv_path])
 
         # Insert into staging table with run_tag
         db_connection.execute("""
-            INSERT INTO staging_korzet 
-            SELECT ?, * FROM temp_korzet
+            INSERT INTO staging_korzet (
+                run_tag, county_code, county_name, oevk_code, settlement_code, 
+                settlement_name, tevk_code, polling_station_code, polling_station_address,
+                counting_designated, accessible, postal_code, street_name, street_type,
+                house_number, building, staircase, gate_code, additional_info
+            )
+            SELECT ?, "Vármegye kód", "Vármegye", "OEVK", "Település kód", 
+                   "Település", "TEVK", "Szavazókör", "Szavazókör cím",
+                   "Számlálásra kijelölt", "Akadálymentesített", "PIR", "Közterület név", "Közterület jelleg",
+                   "Házszám", "Épület", "Lépcsőház", "Kapukód", "column17"
+            FROM temp_korzet
         """, [run_tag])
 
         # Drop temporary table
