@@ -19,14 +19,19 @@ logger = get_logger(__name__)
 
 def register_hash_functions(db_connection: duckdb.DuckDBPyConnection) -> None:
     """Register hash functions with DuckDB."""
-    db_connection.create_function('hash_county_id', hash_county_id)
-    db_connection.create_function('hash_settlement_id', hash_settlement_id)
-    db_connection.create_function('hash_oevk_id', hash_oevk_id)
-    db_connection.create_function('hash_tevk_id', hash_tevk_id)
-    db_connection.create_function('hash_postal_code_id', hash_postal_code_id)
-    db_connection.create_function('hash_postal_code_settlement_id', hash_postal_code_settlement_id)
-    db_connection.create_function('hash_polling_station_id', hash_polling_station_id)
-    db_connection.create_function('hash_address_id', hash_address_id)
+    # Try to register functions, but ignore if they're already registered
+    try:
+        db_connection.create_function('hash_county_id', hash_county_id)
+        db_connection.create_function('hash_settlement_id', hash_settlement_id)
+        db_connection.create_function('hash_oevk_id', hash_oevk_id)
+        db_connection.create_function('hash_tevk_id', hash_tevk_id)
+        db_connection.create_function('hash_postal_code_id', hash_postal_code_id)
+        db_connection.create_function('hash_postal_code_settlement_id', hash_postal_code_settlement_id)
+        db_connection.create_function('hash_polling_station_id', hash_polling_station_id)
+        db_connection.create_function('hash_address_id', hash_address_id)
+    except Exception:
+        # Functions are already registered, which is fine
+        pass
 
 
 def transform_all(db_connection: duckdb.DuckDBPyConnection, run_tag: str) -> None:
@@ -231,7 +236,7 @@ def transform_addresses(db_connection: duckdb.DuckDBPyConnection, run_tag: str) 
     # Extract addresses from Korzet CSV
     db_connection.execute("""
         INSERT INTO Address (
-            ID, Sequence, FullAddress, PublicSpaceName, PublicSpaceType,
+            ID, Sequence, OriginalOrder, FullAddress, PublicSpaceName, PublicSpaceType,
             HouseNumber, Building, Staircase, PostalCode_ID, PollingStation_ID,
             SettlementIndividualElectoralDistrict_ID, County_ID, Settlement_ID,
             NationalIndividualElectoralDistrict_ID
@@ -243,12 +248,13 @@ def transform_addresses(db_connection: duckdb.DuckDBPyConnection, run_tag: str) 
                 street_name,
                 COALESCE(street_type, ''),
                 house_number,
-                building,
-                staircase,
+                COALESCE(building, ''),
+                COALESCE(staircase, ''),
                 CAST(postal_code AS VARCHAR)
             ) as ID,
             ROW_NUMBER() OVER (ORDER BY county_code, settlement_code, oevk_code, tevk_code, postal_code, 
                                street_name, street_type, house_number, building, staircase) as Sequence,
+            ROW_NUMBER() OVER (ORDER BY rowid) as OriginalOrder,
             TRIM(CONCAT_WS(' ', street_name, street_type, house_number, 
                           COALESCE(building, ''), COALESCE(staircase, ''))) as FullAddress,
             street_name as PublicSpaceName,
@@ -270,6 +276,7 @@ def transform_addresses(db_connection: duckdb.DuckDBPyConnection, run_tag: str) 
         WHERE run_tag = ?
         ON CONFLICT (ID) DO UPDATE SET
             Sequence = EXCLUDED.Sequence,
+            OriginalOrder = EXCLUDED.OriginalOrder,
             FullAddress = EXCLUDED.FullAddress,
             PublicSpaceName = EXCLUDED.PublicSpaceName,
             PublicSpaceType = EXCLUDED.PublicSpaceType,

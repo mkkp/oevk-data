@@ -139,13 +139,19 @@ def hash_address_id(
     Returns:
         Hexadecimal string representation of xxhash64 digest
     """
-    # Handle None values
-    building_str = str(building) if building is not None else ""
-    staircase_str = str(staircase) if staircase is not None else ""
+    # Handle None values from DuckDB - convert all None to empty strings
+    county_code = county_code if county_code is not None else ""
+    settlement_code = settlement_code if settlement_code is not None else ""
+    public_space_name = public_space_name if public_space_name is not None else ""
+    public_space_type = public_space_type if public_space_type is not None else ""
+    house_number = house_number if house_number is not None else ""
+    building = building if building is not None else ""
+    staircase = staircase if staircase is not None else ""
+    postal_code = postal_code if postal_code is not None else ""
     
     data = (
         f"{county_code}|{settlement_code}|{public_space_name}|{public_space_type}|"
-        f"{house_number}|{building_str}|{staircase_str}|{postal_code}"
+        f"{house_number}|{building}|{staircase}|{postal_code}"
     ).encode('utf-8')
 
     return xxhash.xxh64(data).hexdigest()

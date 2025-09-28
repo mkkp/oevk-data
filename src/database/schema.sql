@@ -79,6 +79,7 @@ CREATE TABLE IF NOT EXISTS PollingStation (
 CREATE TABLE IF NOT EXISTS Address (
     ID TEXT PRIMARY KEY, -- xxhash64(...) based on full address components
     Sequence INTEGER NOT NULL,
+    OriginalOrder INTEGER NOT NULL,
     FullAddress TEXT NOT NULL,
     PublicSpaceName TEXT NOT NULL,
     PublicSpaceType TEXT NOT NULL,

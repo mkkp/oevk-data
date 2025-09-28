@@ -6,7 +6,9 @@
 .Python
 env/
 venv/
-src/data/staging
-src/data/oevk.db
-/data/staging.test/Korzet_allomany_orszagos.zip
-/data/oevk.test.db.wal
+/**/Korzet_levalogatas*.csv
+/**/Korzet_allomany_orszagos.zip
+**/oevk.json
+**/*.db
+**/*.db.wal
+/test_*.py

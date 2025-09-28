@@ -259,6 +259,7 @@ erDiagram
     Address {
         string ID PK "xxhash64(address components)"
         integer Sequence
+        integer OriginalOrder
         string FullAddress
         string PublicSpaceName
         string PublicSpaceType
@@ -360,6 +361,11 @@ flowchart TD
 - Each TEVK belongs to exactly one OEVK
 - Each settlement belongs to exactly one county
 - Postal codes can span multiple settlements
+
+### Field Descriptions
+
+- **Sequence**: Logical ordering of addresses within their polling station
+- **OriginalOrder**: Preserves the original loading order from source CSV for data lineage
 
 ## Development
 

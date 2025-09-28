@@ -17,7 +17,7 @@ from src.database.connection import get_database_connection
 from src.etl.ingest import download_sources, load_staging_data
 from src.etl.transform import transform_all
 from src.etl.export import export_tables_to_csv, export_addresses_partitioned
-from src.utils.logging import get_logger, PipelineMetrics
+from src.utils.logging import get_logger, PipelineMetrics, setup_logging
 
 logger = get_logger(__name__)
 
@@ -56,6 +56,9 @@ Examples:
                           help='Custom run tag (default: timestamp)')
     
     args = parser.parse_args()
+    
+    # Setup logging with console output
+    setup_logging(log_level="INFO", log_format="simple")
     
     if args.command == 'run':
         run_pipeline(args)
