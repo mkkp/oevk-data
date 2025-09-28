@@ -9,6 +9,9 @@
       "type": "local",
       "command": ["npx", "-y", "@modelcontextprotocol/server-github@latest"],
       "enabled": true,
+      "environment": {
+        "GITHUB_TOKEN": "${MKKP_GITHUB_TOKEN}",
+      },
     },
     // "sequential-thinking-server": {
     //   "type": "local",
