@@ -256,69 +256,131 @@ def transform_polling_stations(db_connection: duckdb.DuckDBPyConnection, run_tag
 
 
 def transform_addresses(db_connection: duckdb.DuckDBPyConnection, run_tag: str) -> None:
-    """Transforms staging data into Address table."""
+    """Transforms staging data into Address table in chunks."""
+    import time
+    
     logger.info("Transforming Address data")
     
-    # Extract addresses from Korzet CSV
-    db_connection.execute("""
-        INSERT INTO Address (
-            ID, Sequence, OriginalOrder, FullAddress, PublicSpaceName, PublicSpaceType,
-            HouseNumber, Building, Staircase, PostalCode_ID, PollingStation_ID,
-            SettlementIndividualElectoralDistrict_ID, County_ID, Settlement_ID,
-            NationalIndividualElectoralDistrict_ID
-        )
-        SELECT 
-            hash_address_id(
-                county_code,
-                settlement_code,
-                street_name,
-                COALESCE(street_type, ''),
-                house_number,
-                COALESCE(building, ''),
-                COALESCE(staircase, ''),
-                CAST(postal_code AS VARCHAR)
-            ) as ID,
-            ROW_NUMBER() OVER (ORDER BY county_code, settlement_code, oevk_code, tevk_code, postal_code, 
-                               street_name, street_type, house_number, building, staircase) as Sequence,
-            ROW_NUMBER() OVER (ORDER BY rowid) as OriginalOrder,
-            TRIM(CONCAT_WS(' ', street_name, street_type, house_number, 
-                          COALESCE(building, ''), COALESCE(staircase, ''))) as FullAddress,
-            street_name as PublicSpaceName,
-            COALESCE(street_type, '') as PublicSpaceType,
-            house_number as HouseNumber,
-            building as Building,
-            staircase as Staircase,
-            hash_postal_code_id(CAST(postal_code AS VARCHAR)) as PostalCode_ID,
-            hash_polling_station_id(
-                county_code, settlement_code, oevk_code, COALESCE(tevk_code, '-'), polling_station_address
-            ) as PollingStation_ID,
-            hash_tevk_id(
-                county_code, settlement_code, COALESCE(tevk_code, '-'), oevk_code
-            ) as SettlementIndividualElectoralDistrict_ID,
-            hash_county_id(county_code) as County_ID,
-            hash_settlement_id(county_code, settlement_code) as Settlement_ID,
-            hash_oevk_id(county_code, oevk_code) as NationalIndividualElectoralDistrict_ID
-        FROM staging_korzet
-        WHERE run_tag = ?
-        ON CONFLICT (ID) DO UPDATE SET
-            Sequence = EXCLUDED.Sequence,
-            OriginalOrder = EXCLUDED.OriginalOrder,
-            FullAddress = EXCLUDED.FullAddress,
-            PublicSpaceName = EXCLUDED.PublicSpaceName,
-            PublicSpaceType = EXCLUDED.PublicSpaceType,
-            HouseNumber = EXCLUDED.HouseNumber,
-            Building = EXCLUDED.Building,
-            Staircase = EXCLUDED.Staircase,
-            PostalCode_ID = EXCLUDED.PostalCode_ID,
-            PollingStation_ID = EXCLUDED.PollingStation_ID,
-            SettlementIndividualElectoralDistrict_ID = EXCLUDED.SettlementIndividualElectoralDistrict_ID,
-            County_ID = EXCLUDED.County_ID,
-            Settlement_ID = EXCLUDED.Settlement_ID,
-            NationalIndividualElectoralDistrict_ID = EXCLUDED.NationalIndividualElectoralDistrict_ID
-    """, [run_tag])
+    # Get total count of addresses to process
+    total_count = db_connection.execute(
+        "SELECT COUNT(*) FROM staging_korzet WHERE run_tag = ?", 
+        [run_tag]
+    ).fetchone()[0]
     
-    row_count = db_connection.execute("SELECT COUNT(*) FROM Address").fetchone()[0]
-    logger.info(f"Transformed {row_count} addresses")
+    # Process in chunks of 10000
+    chunk_size = 10000
+    total_chunks = (total_count + chunk_size - 1) // chunk_size  # ceiling division
+    
+    logger.info(f"Processing {total_count:,} addresses in chunks of {chunk_size:,} ({total_chunks} total chunks)")
+    
+    # Track timing
+    start_time = time.time()
+    
+    for chunk_num in range(total_chunks):
+        chunk_start_time = time.time()
+        offset = chunk_num * chunk_size
+        
+        # Extract addresses from Korzet CSV in chunks using simpler approach
+        db_connection.execute("""
+            INSERT INTO Address (
+                ID, Sequence, OriginalOrder, FullAddress, PublicSpaceName, PublicSpaceType,
+                HouseNumber, Building, Staircase, PostalCode_ID, PollingStation_ID,
+                SettlementIndividualElectoralDistrict_ID, County_ID, Settlement_ID,
+                NationalIndividualElectoralDistrict_ID
+            )
+            SELECT 
+                hash_address_id(
+                    county_code,
+                    settlement_code,
+                    street_name,
+                    COALESCE(street_type, ''),
+                    house_number,
+                    COALESCE(building, ''),
+                    COALESCE(staircase, ''),
+                    CAST(postal_code AS VARCHAR)
+                ) as ID,
+                ROW_NUMBER() OVER (ORDER BY county_code, settlement_code, oevk_code, tevk_code, postal_code, 
+                                   street_name, street_type, house_number, building, staircase) as Sequence,
+                ROW_NUMBER() OVER (ORDER BY county_code, settlement_code, oevk_code, tevk_code, postal_code, 
+                                   street_name, street_type, house_number, building, staircase) as OriginalOrder,
+                TRIM(CONCAT_WS(' ', street_name, street_type, house_number, 
+                              COALESCE(building, ''), COALESCE(staircase, ''))) as FullAddress,
+                street_name as PublicSpaceName,
+                COALESCE(street_type, '') as PublicSpaceType,
+                house_number as HouseNumber,
+                building as Building,
+                staircase as Staircase,
+                hash_postal_code_id(CAST(postal_code AS VARCHAR)) as PostalCode_ID,
+                hash_polling_station_id(
+                    county_code, settlement_code, oevk_code, COALESCE(tevk_code, '-'), polling_station_address
+                ) as PollingStation_ID,
+                hash_tevk_id(
+                    county_code, settlement_code, COALESCE(tevk_code, '-'), oevk_code
+                ) as SettlementIndividualElectoralDistrict_ID,
+                hash_county_id(county_code) as County_ID,
+                hash_settlement_id(county_code, settlement_code) as Settlement_ID,
+                hash_oevk_id(county_code, oevk_code) as NationalIndividualElectoralDistrict_ID
+            FROM (
+                SELECT * FROM staging_korzet 
+                WHERE run_tag = ?
+                ORDER BY county_code, settlement_code, oevk_code, tevk_code, postal_code, 
+                         street_name, street_type, house_number, building, staircase
+                LIMIT ? OFFSET ?
+            ) as chunk
+            ON CONFLICT (ID) DO UPDATE SET
+                Sequence = EXCLUDED.Sequence,
+                OriginalOrder = EXCLUDED.OriginalOrder,
+                FullAddress = EXCLUDED.FullAddress,
+                PublicSpaceName = EXCLUDED.PublicSpaceName,
+                PublicSpaceType = EXCLUDED.PublicSpaceType,
+                HouseNumber = EXCLUDED.HouseNumber,
+                Building = EXCLUDED.Building,
+                Staircase = EXCLUDED.Staircase,
+                PostalCode_ID = EXCLUDED.PostalCode_ID,
+                PollingStation_ID = EXCLUDED.PollingStation_ID,
+                SettlementIndividualElectoralDistrict_ID = EXCLUDED.SettlementIndividualElectoralDistrict_ID,
+                County_ID = EXCLUDED.County_ID,
+                Settlement_ID = EXCLUDED.Settlement_ID,
+                NationalIndividualElectoralDistrict_ID = EXCLUDED.NationalIndividualElectoralDistrict_ID
+        """, [run_tag, chunk_size, offset])
+        
+        # Calculate timing metrics
+        chunk_end_time = time.time()
+        chunk_elapsed = chunk_end_time - chunk_start_time
+        total_elapsed = chunk_end_time - start_time
+        
+        processed_count = min((chunk_num + 1) * chunk_size, total_count)
+        progress_percent = processed_count / total_count * 100
+        
+        # Calculate estimated total time and time remaining
+        if progress_percent > 0:
+            estimated_total_time = total_elapsed / (progress_percent / 100)
+            time_remaining = estimated_total_time - total_elapsed
+            
+            # Format time strings
+            elapsed_str = format_time(total_elapsed)
+            remaining_str = format_time(time_remaining)
+            total_estimated_str = format_time(estimated_total_time)
+            
+            logger.info(f"Chunk {chunk_num + 1}/{total_chunks}: {processed_count:,}/{total_count:,} ({progress_percent:.1f}%) - Elapsed: {elapsed_str}, ETA: {remaining_str}, Total: ~{total_estimated_str}")
+        else:
+            logger.info(f"Chunk {chunk_num + 1}/{total_chunks}: {processed_count:,}/{total_count:,} ({progress_percent:.1f}%) - Starting...")
+    
+    final_count = db_connection.execute("SELECT COUNT(*) FROM Address").fetchone()[0]
+    total_time = time.time() - start_time
+    logger.info(f"Transformed {final_count} addresses in {format_time(total_time)}")
+
+
+def format_time(seconds: float) -> str:
+    """Format time in seconds to human-readable string."""
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    elif seconds < 3600:
+        minutes = seconds / 60
+        return f"{minutes:.1f}m"
+    else:
+        hours = seconds / 3600
+        return f"{hours:.1f}h"
 
 
 def transform_postal_code_settlement_relationships(db_connection: duckdb.DuckDBPyConnection, run_tag: str) -> None:

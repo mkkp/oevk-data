@@ -149,16 +149,16 @@ def load_staging_data(db_connection: duckdb.DuckDBPyConnection,
                 house_number, building, staircase, gate_code, additional_info
             )
             SELECT ?, 
-                   trim(both '\"' from column00), trim(both '\"' from column01), 
-                   trim(both '\"' from column02), trim(both '\"' from column03), 
-                   trim(both '\"' from column04), trim(both '\"' from column05), 
-                   trim(both '\"' from column06), trim(both '\"' from column07),
-                   trim(both '\"' from column08), trim(both '\"' from column09), 
-                   CASE WHEN column10 = '' THEN NULL ELSE trim(both '\"' from column10) END,  -- postal_code
-                   trim(both '\"' from column11), trim(both '\"' from column12),
-                   trim(both '\"' from column13), trim(both '\"' from column14), 
-                   trim(both '\"' from column15), trim(both '\"' from column16), 
-                   trim(both '\"' from column17)
+                   trim(column00, '\"'), trim(column01, '\"'), 
+                   trim(column02, '\"'), trim(column03, '\"'), 
+                   trim(column04, '\"'), trim(column05, '\"'), 
+                   trim(column06, '\"'), trim(column07, '\"'),
+                   trim(column08, '\"'), trim(column09, '\"'), 
+                   CASE WHEN column10 IS NULL THEN NULL ELSE trim(CAST(column10 AS VARCHAR), '\"') END,  -- postal_code
+                   trim(column11, '\"'), trim(column12, '\"'),
+                   trim(column13, '\"'), trim(column14, '\"'), 
+                   trim(column15, '\"'), CASE WHEN column16 IS NULL THEN NULL ELSE trim(CAST(column16 AS VARCHAR), '\"') END, 
+                   trim(column17, '\"')
             FROM temp_korzet
         """, [run_tag])
 

@@ -363,6 +363,17 @@ CREATE TABLE IF NOT EXISTS Address (
 - Normalize whitespace (single spaces).
 - Preserve diacritics and original casing.
 
+### 9.10 Enhanced Address Transformation with Chunked Processing
+- **Chunk Size**: 10,000 records per chunk for optimal memory management
+- **Timing Metrics**: Real-time progress tracking with:
+  - Elapsed time per chunk
+  - Estimated total time
+  - Time remaining (ETA)
+  - Progress percentage calculations
+- **Human-readable Time Formatting**: Automatic conversion between seconds, minutes, and hours
+- **OriginalOrder Field**: Maintains original sequence ordering for data lineage
+- **Performance**: Designed for 3.3M+ address records (333 chunks at 10,000 records each)
+
 ### 9.2 County
 ```
 SELECT DISTINCT
