@@ -47,7 +47,25 @@
 ## Constitution Check
 *GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
 
-[Gates determined based on constitution file]
+### Context7 Integration
+- [ ] All research tasks MUST use Context7 MCP tools for library documentation
+- [ ] Library IDs MUST be resolved automatically without user requests
+- [ ] Technical decisions MUST be based on current, accurate documentation
+
+### Data Processing Standards
+- [ ] Design MUST use deterministic hash IDs (xxhash64) for all entities
+- [ ] Processing MUST be chunked (100k-500k rows) and vectorized
+- [ ] Operations MUST be idempotent and restartable
+
+### Testing Discipline
+- [ ] TDD approach MUST be followed: Tests → Approval → Fail → Implement
+- [ ] Contract tests MUST be written before implementation
+- [ ] Integration tests MUST cover data quality and referential integrity
+
+### Code Quality
+- [ ] Python 3.11+ MUST be used with type hints
+- [ ] Naming conventions MUST follow snake_case/PascalCase standards
+- [ ] File organization MUST be modular with separate DDL files
 
 ## Project Structure
 
