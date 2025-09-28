@@ -1,0 +1,55 @@
+{
+  "module": "src.etl.export",
+  "functions": [
+    {
+      "name": "export_tables_to_csv",
+      "purpose": "Exports each of the 8 target tables to a separate CSV file.",
+      "parameters": [
+        {
+          "name": "db_connection",
+          "type": "duckdb.DuckDBPyConnection",
+          "description": "An active DuckDB connection."
+        },
+        {
+          "name": "export_dir",
+          "type": "str",
+          "description": "The base directory where the CSV files will be saved."
+        },
+        {
+          "name": "run_tag",
+          "type": "str",
+          "description": "The run tag to prepend to the output filenames."
+        }
+      ],
+      "returns": {
+        "type": "None",
+        "description": "This function writes files to the filesystem."
+      }
+    },
+    {
+      "name": "export_addresses_partitioned",
+      "purpose": "Exports the Address table into multiple CSV files, one for each settlement.",
+      "parameters": [
+        {
+          "name": "db_connection",
+          "type": "duckdb.DuckDBPyConnection",
+          "description": "An active DuckDB connection."
+        },
+        {
+          "name": "export_dir",
+          "type": "str",
+          "description": "The base directory where the partitioned address folder will be created."
+        },
+        {
+          "name": "run_tag",
+          "type": "str",
+          "description": "The run tag to prepend to the output filenames."
+        }
+      ],
+      "returns": {
+        "type": "None",
+        "description": "This function writes files to the filesystem."
+      }
+    }
+  ]
+}
