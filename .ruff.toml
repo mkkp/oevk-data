@@ -1,7 +1,7 @@
 line-length = 88
 target-version = "py311"
-select = ["E", "F", "W", "I", "N", "UP", "YTT", "S", "BLE", "FBT", "B", "A", "COM", "C4", "DTZ", "T10", "EM", "EXE", "ISC", "ICN", "G", "INP", "PIE", "T20", "PYI", "PT", "Q", "RSE", "RET", "SLF", "SIM", "TID", "TCH", "INT", "ARG", "PTH", "PL", "TRY", "FLY", "NPY", "PD", "PGH", "PLR", "PTH", "RUF", "ERA", "PDB"]
-ignore = ["E501", "W503", "C901"]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]
 
 [format]
 quote-style = "double"
