@@ -1,7 +1,7 @@
 """Data validation utilities for the OEVK data transformation pipeline."""
 
 from typing import Dict, List, Optional, Any
-from src.utils.logging import get_logger
+from src.utils.pipeline_logging import get_logger
 
 logger = get_logger(__name__)
 
