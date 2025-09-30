@@ -18,6 +18,7 @@
 - **Data Validation**: Pre-release integrity checks
 - **CLI Interface**: Complete command-line management
 - **Change Tracking**: Automated release summaries
+- **Organization Support**: Classic token support for GitHub organization repositories
 
 ## 🧪 **Quality Assurance**
 - **Total Tests**: 157 tests (153 passed, 4 skipped, 2 warnings)
