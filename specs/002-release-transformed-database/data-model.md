@@ -98,7 +98,7 @@ All entity IDs use xxhash64 for deterministic generation:
 ## Data Validation Rules
 
 ### Pre-release Validation
-- All CSV export files must exist and be non-empty
+- All CSV export files must exist and be non-empty, including split address files organized by settlement
 - DuckDB database file must exist and be valid
 - File sizes must be within expected ranges
 - Checksums must match expected values

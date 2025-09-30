@@ -14,8 +14,8 @@ This specification defines a **transformer program** that downloads Hungarian el
 - `Korzet_allomany_orszagos.zip` → single large CSV (>3M rows): address-to-polling-district coverage with TEVK/OEVK, postal codes, and polling station info.
 
 **Outputs**
-- CSV for each target table (`County`, `Settlement`, `NationalIndividualElectoralDistrict`, `SettlementIndividualElectoralDistrict`, `PostalCode`, `PostalCode_Settlement`, `PollingStation`, `Address`).
-- **Partitioned Address exports**: one CSV per `Settlement`, plus an optional consolidated `Address.csv`.
+- CSV for each target table (`County`, `Settlement`, `NationalIndividualElectoralDistrict`, `SettlementIndividualElectoralDistrict`, `PostalCode`, `PostalCode_Settlement`, `PollingStation`).
+- **Partitioned Address exports**: one CSV per `Settlement` (split address files), with no consolidated `Address.csv`.
 
 **Key design choices**
 - **Deterministic surrogate IDs** derived from stable business keys to ensure idempotency and reproducible joins.
@@ -32,7 +32,7 @@ This specification defines a **transformer program** that downloads Hungarian el
 - Parsing (JSON + CSV with semicolon delimiters and UTF‑8).
 - Staging loads with minimal type coercion.
 - Transform to the target relational model shown here.
-- CSV exports for all target tables; **Address** additionally split by `Settlement`.
+- CSV exports for all target tables except Address; **Address** split by `Settlement` only (no consolidated file).
 - Idempotent reruns (safe to reprocess the same day’s files).
 - Basic data validation and referential integrity checks.
 
@@ -508,7 +508,7 @@ FROM base;
 
 ### 10.1 Table-wide CSVs
 - One CSV per target table:
-  - `County.csv`, `Settlement.csv`, `NationalIndividualElectoralDistrict.csv`, `SettlementIndividualElectoralDistrict.csv`, `PostalCode.csv`, `PostalCode_Settlement.csv`, `PollingStation.csv`, `Address.csv` (optional if partitioned files exist).
+  - `County.csv`, `Settlement.csv`, `NationalIndividualElectoralDistrict.csv`, `SettlementIndividualElectoralDistrict.csv`, `PostalCode.csv`, `PostalCode_Settlement.csv`, `PollingStation.csv`.
 - Format: **CSV, comma-delimited, UTF‑8**, quoted where necessary, header row included.
 - File naming: `{RUN_TAG}_{TableName}.csv`
 
@@ -630,7 +630,7 @@ MAIN(run_tag):
 ## 17) Acceptance Criteria
 
 - Program runs end-to-end without manual intervention.
-- All 8 target tables are populated and exported as CSV.
+- All 7 target tables are populated and exported as CSV (excluding Address, which is split by Settlement).
 - Address partitioned CSVs exist for every distinct `Settlement`.
 - Deterministic IDs are stable across re-runs with identical inputs.
 - FK constraints validated (>99.99% rows linked; any residuals in rejects with explanations).

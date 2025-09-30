@@ -22,10 +22,41 @@ class TestFilePackager:
         """Test packaging CSV files successfully."""
         with tempfile.TemporaryDirectory() as temp_dir:
             with tempfile.TemporaryDirectory() as data_dir:
-                # Create test CSV files
-                (Path(data_dir) / "addresses.csv").write_text("id,name\n1,Test\n")
-                (Path(data_dir) / "settlements.csv").write_text("id,name\n1,Test\n")
-                (Path(data_dir) / "counties.csv").write_text("id,name\n1,Test\n")
+                data_path = Path(data_dir)
+
+                # Create timestamped CSV files (like the real ETL process)
+                timestamped_files = {
+                    "20250929_200611_Settlement.csv": "id,name\n1,Test\n",
+                    "20250929_200611_County.csv": "id,name\n1,Test\n",
+                    "20250929_200611_NationalIndividualElectoralDistrict.csv": "id,name\n1,Test\n",
+                    "20250929_200611_PollingStation.csv": "id,name\n1,Test\n",
+                    "20250929_200611_PostalCode.csv": "id,name\n1,Test\n",
+                    "20250929_200611_PostalCode_Settlement.csv": "id,name\n1,Test\n",
+                    "20250929_200611_SettlementIndividualElectoralDistrict.csv": "id,name\n1,Test\n",
+                }
+
+                for filename, content in timestamped_files.items():
+                    (data_path / filename).write_text(content)
+
+                # Create symlinks for main files (like the real ETL process)
+                (data_path / "settlements.csv").symlink_to(
+                    "20250929_200611_Settlement.csv"
+                )
+                (data_path / "counties.csv").symlink_to("20250929_200611_County.csv")
+
+                # Create address directory with split files (like the real ETL process)
+                address_dir = data_path / "20250929_200611_Address"
+                address_dir.mkdir()
+
+                # Create split address files
+                split_address_files = {
+                    "Address_001_Budapest.csv": "id,name\n1,Budapest Address\n",
+                    "Address_002_Debrecen.csv": "id,name\n1,Debrecen Address\n",
+                    "Address_003_Szeged.csv": "id,name\n1,Szeged Address\n",
+                }
+
+                for filename, content in split_address_files.items():
+                    (address_dir / filename).write_text(content)
 
                 packager = FilePackager(temp_dir)
                 result = packager.package_csv_files(data_dir, "test-release")
@@ -42,17 +73,53 @@ class TestFilePackager:
 
                 with zipfile.ZipFile(archive_path, "r") as zipf:
                     file_list = zipf.namelist()
-                    assert "addresses.csv" in file_list
+                    # Should contain split address files in addresses/ directory
+                    assert "addresses/Address_001_Budapest.csv" in file_list
+                    assert "addresses/Address_002_Debrecen.csv" in file_list
+                    assert "addresses/Address_003_Szeged.csv" in file_list
+                    # And other CSV files
                     assert "settlements.csv" in file_list
                     assert "counties.csv" in file_list
+                    assert "NationalIndividualElectoralDistrict.csv" in file_list
+                    assert "PollingStation.csv" in file_list
+                    assert "PostalCode.csv" in file_list
+                    assert "PostalCode_Settlement.csv" in file_list
+                    assert "SettlementIndividualElectoralDistrict.csv" in file_list
 
     def test_package_csv_files_missing_files(self):
         """Test packaging CSV files when some files are missing."""
         with tempfile.TemporaryDirectory() as temp_dir:
             with tempfile.TemporaryDirectory() as data_dir:
-                # Create only some CSV files
-                (Path(data_dir) / "addresses.csv").write_text("id,name\n1,Test\n")
-                # settlements.csv and counties.csv are missing
+                data_path = Path(data_dir)
+
+                # Create only some timestamped CSV files
+                timestamped_files = {
+                    "20250929_200611_Settlement.csv": "id,name\n1,Test\n",
+                    "20250929_200611_County.csv": "id,name\n1,Test\n",
+                }
+
+                for filename, content in timestamped_files.items():
+                    (data_path / filename).write_text(content)
+
+                # Create symlinks for main files
+                (data_path / "settlements.csv").symlink_to(
+                    "20250929_200611_Settlement.csv"
+                )
+                (data_path / "counties.csv").symlink_to("20250929_200611_County.csv")
+
+                # Create address directory with split files
+                address_dir = data_path / "20250929_200611_Address"
+                address_dir.mkdir()
+
+                # Create split address files
+                split_address_files = {
+                    "Address_001_Budapest.csv": "id,name\n1,Budapest Address\n",
+                }
+
+                for filename, content in split_address_files.items():
+                    (address_dir / filename).write_text(content)
+
+                # Other CSV files are missing
 
                 packager = FilePackager(temp_dir)
                 result = packager.package_csv_files(data_dir, "test-release")
@@ -60,13 +127,19 @@ class TestFilePackager:
                 assert result["artifact_type"] == "csv_archive"
                 assert result["file_size"] > 0
 
-                # Verify ZIP file contains only the existing file
+                # Verify ZIP file contains only the existing files
                 archive_path = Path(result["file_path"])
                 with zipfile.ZipFile(archive_path, "r") as zipf:
                     file_list = zipf.namelist()
-                    assert "addresses.csv" in file_list
-                    assert "settlements.csv" not in file_list
-                    assert "counties.csv" not in file_list
+                    assert "addresses/Address_001_Budapest.csv" in file_list
+                    assert "settlements.csv" in file_list
+                    assert "counties.csv" in file_list
+                    # Missing files should not be in the archive
+                    assert "NationalIndividualElectoralDistrict.csv" not in file_list
+                    assert "PollingStation.csv" not in file_list
+                    assert "PostalCode.csv" not in file_list
+                    assert "PostalCode_Settlement.csv" not in file_list
+                    assert "SettlementIndividualElectoralDistrict.csv" not in file_list
 
     def test_package_database_success(self):
         """Test packaging database file successfully."""
@@ -118,6 +191,17 @@ class TestFilePackager:
                 (Path(data_dir) / "addresses.csv").write_text("id,name\n1,Test\n")
                 (Path(data_dir) / "settlements.csv").write_text("id,name\n1,Test\n")
                 (Path(data_dir) / "counties.csv").write_text("id,name\n1,Test\n")
+                (Path(data_dir) / "NationalIndividualElectoralDistrict.csv").write_text(
+                    "id,name\n1,Test\n"
+                )
+                (Path(data_dir) / "PollingStation.csv").write_text("id,name\n1,Test\n")
+                (Path(data_dir) / "PostalCode.csv").write_text("id,name\n1,Test\n")
+                (Path(data_dir) / "PostalCode_Settlement.csv").write_text(
+                    "id,name\n1,Test\n"
+                )
+                (
+                    Path(data_dir) / "SettlementIndividualElectoralDistrict.csv"
+                ).write_text("id,name\n1,Test\n")
                 (Path(data_dir) / "database.duckdb").write_text("test database content")
 
                 packager = FilePackager(temp_dir)

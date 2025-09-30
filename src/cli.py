@@ -14,11 +14,18 @@ sys.path.insert(0, str(project_root))
 # Add src directory to Python path
 sys.path.insert(0, str(project_root / "src"))
 
+# Add current directory to Python path
+sys.path.insert(0, str(Path(__file__).parent))
 
-from src.database.connection import get_database_connection
-from src.etl.export import export_addresses_partitioned, export_tables_to_csv
-from src.etl.ingest import download_sources, load_staging_data
-from src.etl.transform_optimized import transform_all_optimized
+
+from database.connection import get_database_connection
+from etl.export import (
+    create_release_symlinks,
+    export_addresses_partitioned,
+    export_tables_to_csv,
+)
+from etl.ingest import download_sources, load_staging_data
+from etl.transform_optimized import transform_all_optimized
 from src.utils.pipeline_logging import PipelineMetrics, get_logger, setup_logging
 
 # Release workflow import (conditional to avoid import errors during development)
@@ -48,6 +55,14 @@ Examples:
   # Run only specific stages
   python src/cli.py run --stages ingest,transform
         """,
+    )
+
+    # Global verbose flag
+    parser.add_argument(
+        "--verbose",
+        "-v",
+        action="store_true",
+        help="Enable verbose/debug logging",
     )
 
     subparsers = parser.add_subparsers(dest="command", help="Command to execute")
@@ -149,6 +164,14 @@ Examples:
         create_parser.add_argument(
             "--auto", action="store_true", help="Auto-generate tag and create release"
         )
+        create_parser.add_argument(
+            "--force", action="store_true", help="Force overwrite existing release"
+        )
+        create_parser.add_argument(
+            "--skip-upload",
+            action="store_true",
+            help="Skip GitHub upload (create packages only)",
+        )
 
         # Release status command
         status_parser = release_subparsers.add_parser(
@@ -188,7 +211,8 @@ Examples:
     args = parser.parse_args()
 
     # Setup logging with console output
-    setup_logging(log_level="INFO", log_format="simple")
+    log_level = "DEBUG" if hasattr(args, "verbose") and args.verbose else "INFO"
+    setup_logging(log_level=log_level, log_format="simple")
 
     if args.command == "run":
         run_pipeline(args)
@@ -313,6 +337,9 @@ def run_pipeline(args):
             export_tables_to_csv(conn, args.output_dir, run_tag)
             export_addresses_partitioned(conn, args.output_dir, run_tag)
 
+            # Create release symlinks for validation compatibility
+            create_release_symlinks(args.output_dir, run_tag, args.db_path)
+
             metrics.log_step_completion("export", row_count=total_rows)
 
         # Final pipeline summary
@@ -370,6 +397,20 @@ def handle_release_command(args):
             print(f"Total Size: {metadata.total_size} bytes")
             print(f"Pipeline Run ID: {metadata.pipeline_run_id}")
 
+            # Verbose output
+            if hasattr(args, "verbose") and args.verbose:
+                print(f"\n=== VERBOSE DETAILS ===")
+                print(f"Release ID: {metadata.release_id}")
+                print(f"Validation Status: {metadata.validation_status}")
+                print(f"Pipeline Run ID: {metadata.pipeline_run_id}")
+
+                if metadata.validation_errors:
+                    print(f"\nDetailed Validation Errors:")
+                    for i, error in enumerate(metadata.validation_errors, 1):
+                        print(f"  {i}. {error}")
+                else:
+                    print("\nDetailed Validation Errors: None")
+
             if metadata.validation_errors:
                 print(f"\nValidation Errors: {len(metadata.validation_errors)}")
                 for error in metadata.validation_errors:
@@ -398,12 +439,23 @@ def handle_release_command(args):
                 tag=tag,
                 draft=args.draft,
                 prerelease=args.prerelease,
+                force=args.force,
+                skip_upload=args.skip_upload,
             )
 
-            print("=== RELEASE CREATED SUCCESSFULLY ===")
-            print(f"Release URL: {result['release'].get('html_url')}")
-            print(f"Release Tag: {result['package']['tag']}")
-            print(f"Artifacts: {len(result['package']['artifacts'])}")
+            if args.skip_upload:
+                print("=== PACKAGES CREATED SUCCESSFULLY (SKIPPED UPLOAD) ===")
+                print(f"Release Tag: {result['package']['release_tag']}")
+                print(f"Artifacts Created: {len(result.get('artifacts', []))}")
+                for artifact in result.get("artifacts", []):
+                    print(
+                        f"  - {artifact.get('artifact_type')}: {artifact.get('file_path')}"
+                    )
+            else:
+                print("=== RELEASE CREATED SUCCESSFULLY ===")
+                print(f"Release URL: {result['release'].get('html_url')}")
+                print(f"Release Tag: {result['package']['release_tag']}")
+                print(f"Artifacts: {len(result.get('artifacts', []))}")
 
         elif args.release_command == "status":
             workflow = ReleaseWorkflow(

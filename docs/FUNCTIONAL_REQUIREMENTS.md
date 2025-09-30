@@ -13,7 +13,7 @@ The address data will be structured based on the data found at
 ## Task
 
 A software that downloads the address data and then loads it into the specified data structure.
-The data should be loaded into a staging database, and then an export should be created for each table in CSV format. The address data should be stored in multiple CSV files, splitted by Settlement.
+The data should be loaded into a staging database, and then an export should be created for each table in CSV format. The address data should be stored in multiple CSV files, split by Settlement.
 
 
 ## Data Structure

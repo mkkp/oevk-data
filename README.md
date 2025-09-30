@@ -73,20 +73,83 @@ To run the complete data transformation pipeline locally:
 
 ```bash
 # Run complete pipeline with default settings
-python src/cli.py run
+python -m src.cli run
 
 # Run with custom database and output directories
-python src/cli.py run --db-path data/oevk.db --output-dir exports/ --staging-dir data/staging/
+python -m src.cli run --db-path data/oevk.db --output-dir exports/ --staging-dir data/staging/
 
 # Run only specific stages
-python src/cli.py run --stages ingest,transform,export
-python src/cli.py run --stages transform  # Only transformation stage
+python -m src.cli run --stages ingest,transform,export
+python -m src.cli run --stages transform  # Only transformation stage
 
 # Run with custom run tag
-python src/cli.py run --run-tag $(date +%Y%m%d_%H%M%S)
+python -m src.cli run --run-tag $(date +%Y%m%d_%H%M%S)
 
 # Show all available options
-python src/cli.py run --help
+python -m src.cli run --help
+```
+
+### Release Workflow
+
+The project includes a comprehensive release workflow for publishing processed data to GitHub releases:
+
+#### Data Validation
+
+```bash
+# Validate release data before creating release
+python -m src.cli release validate --staging-dir data/staging --exports-dir exports
+
+# Validate with custom directories
+python -m src.cli release validate --staging-dir /path/to/staging --exports-dir /path/to/exports
+```
+
+#### Release Creation
+
+```bash
+# Set GitHub token (required)
+export GITHUB_TOKEN="ghp_your_token_here"
+
+# Create release with auto-generated tag
+python -m src.cli release create --repo-owner your-org --repo-name oevk-data --auto
+
+# Create release with specific tag
+python -m src.cli release create --repo-owner your-org --repo-name oevk-data --tag 20250101-1200
+
+# Create draft release for review
+python -m src.cli release create --repo-owner your-org --repo-name oevk-data --auto --draft
+
+# Create prerelease (beta/alpha)
+python -m src.cli release create --repo-owner your-org --repo-name oevk-data --auto --prerelease
+
+# Force overwrite existing release
+python -m src.cli release create --repo-owner your-org --repo-name oevk-data --tag existing-tag --force
+
+# Create packages without uploading to GitHub (local testing)
+python -m src.cli release create --repo-owner your-org --repo-name oevk-data --auto --skip-upload
+```
+
+#### Release Management
+
+```bash
+# Check release status
+python -m src.cli release status --repo-owner your-org --repo-name oevk-data --tag 20250101-1200
+
+# List recent releases
+python -m src.cli release history --repo-owner your-org --repo-name oevk-data --limit 10
+
+# Get detailed release information
+python -m src.cli release info --repo-owner your-org --repo-name oevk-data --tag 20250101-1200
+```
+
+#### Environment Variables
+
+```bash
+# GitHub Personal Access Token (required for releases)
+export GITHUB_TOKEN="ghp_your_token_here"
+
+# Optional: Custom directories
+export STAGING_DIR="/path/to/staging"
+export EXPORTS_DIR="/path/to/exports"
 ```
 
 ### Pipeline Stages
@@ -96,6 +159,15 @@ The pipeline consists of three main stages:
 1. **Ingest**: Download source data and load into staging tables
 2. **Transform**: Process staging data into normalized target tables
 3. **Export**: Generate CSV files from target tables
+
+### Release Workflow Stages
+
+The release workflow provides automated GitHub releases:
+
+1. **Data Validation**: Comprehensive pre-release checks for data integrity
+2. **Package Creation**: Compress CSV and database files into release artifacts
+3. **GitHub Integration**: Create releases with proper metadata and assets
+4. **Release Management**: Status checking, history, and information retrieval
 
 ### Transformation Stage Details
 
@@ -123,6 +195,28 @@ Address: 3,336,202 rows
 PostalCode: 3,106 rows
 PostalCode_Settlement: 6,354 rows
 ```
+
+### Release Artifacts
+
+Each release creates two main artifacts:
+
+1. **CSV Archive** (`oevk-data-csv-{tag}.zip`): Contains all CSV files
+   - `addresses/` - Directory containing address files split by settlement (e.g., `Address_001_Budapest.csv`, `Address_002_Debrecen.csv`)
+   - `settlements.csv` - Settlement information
+   - `counties.csv` - County data
+   - `polling_stations.csv` - Polling station details
+   - `electoral_districts.csv` - Electoral district information
+
+2. **Database Archive** (`oevk-data-db-{tag}.zip`): Contains DuckDB database
+   - `database.duckdb` - Complete relational database with all tables
+
+### Release Performance Targets
+
+- **Complete Workflow**: ≤15 minutes for full release process
+- **Data Validation**: ≤2 minutes for comprehensive checks
+- **Package Creation**: ≤5 minutes for artifact compression
+- **GitHub Integration**: ≤3 minutes for release creation
+- **Idempotent Operations**: Safe to retry failed operations
 
 ### Performance Monitoring
 
@@ -168,6 +262,11 @@ export LOG_LEVEL="INFO"
 # Export settings
 export INCLUDE_PARTITIONED_ADDRESSES="true"
 export INCLUDE_CONSOLIDATED_ADDRESSES="true"
+
+# Release workflow settings
+export GITHUB_TOKEN="ghp_your_token_here"  # Required for releases
+export STAGING_DIR="data/staging"
+export EXPORTS_DIR="exports"
 ```
 
 ### Output Structure
@@ -412,12 +511,22 @@ ruff format .
 
 ## Performance
 
+### ETL Pipeline Performance
+
 - **Target Performance**: Process 3M+ rows in under 30 minutes
 - **Achieved Performance**: ~2.5 minutes for 3.34M records with parallel processing
 - **Performance Improvement**: 98.6% reduction from baseline (183.6 minutes → 2.5 minutes)
 - **Memory Usage**: Configurable memory limits for DuckDB
 - **Parallel Processing**: Configurable worker threads with ThreadPoolExecutor
 - **Chunked Processing**: Process data in manageable chunks (50K records per chunk)
+
+### Release Workflow Performance
+
+- **Complete Workflow**: ≤15 minutes for full release process
+- **Data Validation**: ≤2 minutes for comprehensive checks
+- **Package Creation**: ≤5 minutes for artifact compression
+- **GitHub Integration**: ≤3 minutes for release creation
+- **Idempotent Operations**: Safe to retry failed operations
 
 ### Performance Benchmarks
 
@@ -439,6 +548,76 @@ See [PERFORMANCE_BENCHMARKS.md](PERFORMANCE_BENCHMARKS.md) for detailed performa
 4. **Memory Limits**: Adjust `DB_MEMORY_LIMIT` if encountering memory issues
 5. **Database Locks**: Kill processes holding database locks using `lsof oevk.db` and `kill <PID>`
 6. **Parallel Processing Timeouts**: Increase timeout settings for large datasets
+
+### Release Workflow Issues
+
+#### GitHub Token Requirements
+
+To use the release workflow, you need a GitHub Personal Access Token with the following permissions:
+
+- **repo** (full repository access)
+- **workflow** (if using GitHub Actions)
+- **read:org** (if accessing organization repositories)
+
+**IMPORTANT**: For organization repositories, use **classic personal access tokens** instead of fine-grained tokens. Classic tokens have better organization repository upload permissions.
+
+#### GitHub Authentication
+```bash
+# Verify GitHub CLI authentication
+gh auth status
+
+# Login if needed
+gh auth login
+
+# Set token explicitly
+gh auth login --with-token <<< "$GITHUB_TOKEN"
+
+# For organization repositories, use classic tokens instead of fine-grained tokens:
+# 1. Go to GitHub Settings > Developer settings > Personal access tokens > Tokens (classic)
+# 2. Create a new classic token with "repo" scope
+# 3. Use the classic token (starts with "gho_") instead of fine-grained tokens (start with "github_pat_")
+```
+
+#### Release Creation Failures
+```bash
+# Check if release already exists
+gh release view 20250101-1200 --repo your-org/oevk-data
+
+# Delete existing release if needed
+gh release delete 20250101-1200 --repo your-org/oevk-data --yes
+
+# Force recreate release
+python -m src.cli release create --repo-owner your-org --repo-name oevk-data --tag 20250101-1200 --force
+
+# For organization repository upload issues, use classic tokens:
+# 1. Regenerate token as classic token (starts with "gho_")
+# 2. Update GITHUB_TOKEN environment variable
+# 3. Test upload: gh release upload 20250101-1200 test_file.txt --repo your-org/oevk-data
+```
+
+#### Data Validation Issues
+```bash
+# Run validation with verbose output
+python -m src.cli release validate --staging-dir data/staging --exports-dir exports --verbose
+
+# Check file permissions
+ls -la data/staging/
+ls -la exports/
+
+# Verify file contents
+head -n 5 data/staging/addresses.csv
+head -n 5 exports/addresses/Address_001_Budapest.csv
+```
+
+#### Debug Mode
+```bash
+# Enable debug logging
+export LOG_LEVEL="DEBUG"
+python -m src.cli release create --repo-owner your-org --repo-name oevk-data --auto
+
+# Dry run (validate without creating release)
+python -m src.cli release create --repo-owner your-org --repo-name oevk-data --auto --dry-run
+```
 
 ### Logs
 

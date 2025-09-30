@@ -131,7 +131,10 @@ releases/
 │   ├── oevk-data-db-20250929-1430.zip
 │   └── release-metadata.json
 exports/
-├── addresses.csv
+├── addresses/
+│   ├── Address_001_Budapest.csv
+│   ├── Address_002_Debrecen.csv
+│   └── ...
 ├── counties.csv
 ├── settlements.csv
 └── oevk_data.db

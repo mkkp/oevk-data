@@ -28,10 +28,12 @@ class ReleasePackage:
 
     def _validate(self):
         """Validate release package fields."""
-        # Validate release tag format
+        # Validate release tag format (allow any valid GitHub tag format)
         import re
 
-        if not re.match(r"^\d{8}-\d{4}$", self.release_tag):
+        # GitHub tags can contain alphanumeric characters, hyphens, underscores, and dots
+        # but cannot start with a hyphen or dot
+        if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$", self.release_tag):
             raise ValueError(f"Invalid release_tag format: {self.release_tag}")
 
         # Validate status

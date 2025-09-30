@@ -70,26 +70,29 @@ As a data consumer, I need to access packaged releases of transformed Hungarian 
 ## Requirements *(mandatory)*
 
 ### Functional Requirements
-- **FR-001**: System MUST create compressed archive files containing all exported CSV data from the transformation pipeline
+- **FR-001**: System MUST create compressed archive files containing all exported CSV data from the transformation pipeline, including split address files organized by settlement
 - **FR-002**: System MUST create a compressed archive file containing the DuckDB database file from the transformation pipeline
-- **FR-003**: System MUST generate unique release tags based on the current date in YYYYMMDD format
+- **FR-003**: System MUST generate unique release tags based on the current date in YYYYMMDD-HHMM format
 - **FR-004**: System MUST automatically create GitHub releases when the transformation pipeline completes successfully
 - **FR-005**: System MUST tag the commit with the release tag when a release is created
 - **FR-006**: System MUST include a summary of changes since the last release in the release description, including data structure changes and summarized commit logs
-- **FR-007**: System MUST validate data integrity before creating compressed archive files
+- **FR-007**: System MUST validate data integrity before creating compressed archive files, including verification of split address file structure
 - **FR-008**: System MUST clean up temporary files generated during the release process
 - **FR-009**: System MUST support both automated releases (on push to main branch) and manual trigger of releases
 - **FR-010**: System MUST update project documentation to reflect the new release workflow
+- **FR-011**: System MUST support GitHub organization repositories using classic personal access tokens for artifact upload permissions
 
 ### Non-Functional Requirements
 - **NFR-001**: The release process MUST complete within 15 minutes of the transformation pipeline finishing
 - **NFR-002**: The compressed archive files MUST maintain data integrity and be verifiable upon extraction
 - **NFR-003**: The release workflow MUST be idempotent and produce identical results when run with identical inputs
+- **NFR-004**: The GitHub integration MUST support both personal and organization repositories with appropriate token authentication
 
 ### Key Entities *(include if feature involves data)*
 - **Release Package**: Contains compressed data files ready for distribution
 - **Release Tag**: Unique identifier for each release based on date
 - **Change Summary**: Description of modifications since previous release
+- **GitHub Token**: Authentication token with appropriate permissions for repository access and artifact uploads
 
 ---
 
@@ -119,6 +122,10 @@ As a data consumer, I need to access packaged releases of transformed Hungarian 
 - Q: What should happen when the transformation pipeline fails before release creation? → A: Release process should not run at all
 - Q: What specific data should be included in the change summary between releases? → A: Data structure changes detailed, commit logs summarized
 - Q: Should the release workflow validate data integrity before creating archives? → A: Yes, validate all data before compression
+
+### Session 2025-09-30
+- Q: How should the system handle GitHub organization repositories with upload permission issues? → A: Use classic personal access tokens instead of fine-grained tokens for organization repository uploads
+- Q: What authentication method should be used for artifact uploads to organization repositories? → A: Use `gh release upload` command with classic tokens for better organization repository support
 
 ## Execution Status
 *Updated by main() during processing*

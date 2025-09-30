@@ -27,7 +27,16 @@ class ReleaseUtils:
     @staticmethod
     def get_csv_files() -> List[str]:
         """Get list of CSV files for packaging."""
-        return ["addresses.csv", "settlements.csv", "counties.csv"]
+        return [
+            "addresses.csv",
+            "settlements.csv",
+            "counties.csv",
+            "NationalIndividualElectoralDistrict.csv",
+            "PollingStation.csv",
+            "PostalCode.csv",
+            "PostalCode_Settlement.csv",
+            "SettlementIndividualElectoralDistrict.csv",
+        ]
 
     @staticmethod
     def validate_directory_exists(directory: Path, name: str) -> None:

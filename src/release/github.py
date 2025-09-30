@@ -4,11 +4,11 @@ GitHub integration service.
 Manages GitHub releases, tags, and artifact uploads.
 """
 
+import json
 import os
 import subprocess
-import json
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import Any, Dict, List, Optional
 
 
 class GitHubIntegration:
@@ -34,51 +34,71 @@ class GitHubIntegration:
         prerelease: bool = False,
     ) -> Dict[str, Any]:
         """Create a GitHub release."""
+        # Use gh release create command instead of direct API for better boolean handling
         cmd = [
             "gh",
-            "api",
-            f"repos/{self.repo_owner}/{self.repo_name}/releases",
-            "-X",
-            "POST",
-            "-H",
-            "Accept: application/vnd.github.v3+json",
-            "-f",
-            f"tag_name={tag}",
-            "-f",
-            f"name={title}",
-            "-f",
-            f"body={body}",
-            "-f",
-            f"draft={str(draft).lower()}",
-            "-f",
-            f"prerelease={str(prerelease).lower()}",
+            "release",
+            "create",
+            tag,
+            "--repo",
+            f"{self.repo_owner}/{self.repo_name}",
+            "--title",
+            title,
+            "--notes",
+            body,
         ]
 
-        result = self._run_gh_command(cmd)
-        return json.loads(result)
+        if draft:
+            cmd.append("--draft")
+        if prerelease:
+            cmd.append("--prerelease")
+
+        self._run_gh_command(cmd)
+
+        # Get the created release details
+        release = self.get_release_by_tag(tag)
+        if not release:
+            raise RuntimeError(f"Failed to retrieve created release with tag {tag}")
+        return release
 
     def upload_artifact(
         self, release_id: str, artifact_path: str, artifact_name: str
     ) -> Dict[str, Any]:
         """Upload an artifact to a GitHub release."""
+        # Get the release to find the tag
+        release = self.get_release_by_id(release_id)
+        if not release:
+            raise ValueError(f"Release with ID {release_id} not found")
+
+        tag = release["tag_name"]
+
+        # Use gh release upload command instead of direct API for better organization repo support
         cmd = [
             "gh",
-            "api",
-            f"repos/{self.repo_owner}/{self.repo_name}/releases/{release_id}/assets",
-            "-X",
-            "POST",
-            "-H",
-            "Accept: application/vnd.github.v3+json",
-            "-H",
-            "Content-Type: application/octet-stream",
-            "-f",
-            f"name={artifact_name}",
-            "--data-binary",
-            f"@{artifact_path}",
+            "release",
+            "upload",
+            tag,
+            artifact_path,
+            "--repo",
+            f"{self.repo_owner}/{self.repo_name}",
+            "--clobber",
         ]
 
-        result = self._run_gh_command(cmd)
-        return json.loads(result)
+        self._run_gh_command(cmd)
+
+        # Get the uploaded asset details
+        updated_release = self.get_release_by_id(release_id)
+        if updated_release:
+            for asset in updated_release.get("assets", []):
+                if asset["name"] == artifact_name:
+                    return asset
+
+        # Return basic info if we can't find the asset
+        return {
+            "name": artifact_name,
+            "state": "uploaded",
+            "browser_download_url": f"https://github.com/{self.repo_owner}/{self.repo_name}/releases/download/{tag}/{artifact_name}",
+        }
 
     def get_release_by_tag(self, tag: str) -> Optional[Dict[str, Any]]:
         """Get release information by tag."""
@@ -86,6 +106,22 @@ class GitHubIntegration:
             "gh",
             "api",
             f"repos/{self.repo_owner}/{self.repo_name}/releases/tags/{tag}",
+            "-H",
+            "Accept: application/vnd.github.v3+json",
+        ]
+
+        try:
+            result = self._run_gh_command(cmd)
+            return json.loads(result)
+        except subprocess.CalledProcessError:
+            return None
+
+    def get_release_by_id(self, release_id: str) -> Optional[Dict[str, Any]]:
+        """Get release information by ID."""
+        cmd = [
+            "gh",
+            "api",
+            f"repos/{self.repo_owner}/{self.repo_name}/releases/{release_id}",
             "-H",
             "Accept: application/vnd.github.v3+json",
         ]
@@ -131,11 +167,17 @@ class GitHubIntegration:
         return json.loads(result)
 
     def create_release_with_artifacts(
-        self, tag: str, title: str, body: str, artifacts: List[Dict[str, str]]
+        self,
+        tag: str,
+        title: str,
+        body: str,
+        artifacts: List[Dict[str, str]],
+        draft: bool = False,
+        prerelease: bool = False,
     ) -> Dict[str, Any]:
         """Create a release and upload multiple artifacts."""
         # Create the release
-        release = self.create_release(tag, title, body)
+        release = self.create_release(tag, title, body, draft, prerelease)
         release_id = release["id"]
 
         # Upload artifacts
@@ -168,11 +210,21 @@ class GitHubIntegration:
         if self.token:
             env["GITHUB_TOKEN"] = self.token
 
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, env=env, check=True
-        )
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, env=env, check=True
+            )
+            return result.stdout
+        except subprocess.CalledProcessError as e:
+            import logging
 
-        return result.stdout
+            logger = logging.getLogger(__name__)
+            logger.error(f"GitHub command failed: {e}")
+            logger.error(f"Command: {' '.join(cmd)}")
+            logger.error(f"Return code: {e.returncode}")
+            logger.error(f"Stdout: {e.stdout}")
+            logger.error(f"Stderr: {e.stderr}")
+            raise
 
     def validate_connection(self) -> bool:
         """Validate GitHub connection and permissions."""
