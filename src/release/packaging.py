@@ -133,18 +133,43 @@ class FilePackager:
     def package_database(self, data_dir: str, release_tag: str) -> Dict[str, Any]:
         """Package database file into a compressed archive."""
         data_path = Path(data_dir)
-        db_file = "database.duckdb"
+
+        # Try multiple database file locations in order of preference
+        # Prioritize the main data/oevk.db file first
+        db_files_to_try = [
+            "../data/oevk.db",  # Main database in data directory (highest priority)
+            "database.duckdb",  # Primary database file
+            "oevk.db",  # Main transformed database
+            "oevk_data.duckdb",  # Staging database
+        ]
 
         archive_name = ReleaseUtils.generate_archive_name(
             "database_archive", release_tag
         )
         archive_path = self.output_dir / archive_name
 
-        # Create ZIP archive containing the database
-        with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zipf:
+        # Find and package the first available database file
+        db_file_used = None
+
+        # First try files in the current data directory
+        for db_file in db_files_to_try:
             db_path = data_path / db_file
             if db_path.exists():
-                zipf.write(db_path, db_file)
+                db_file_used = db_file
+                # Use consistent name in archive - always name it oevk.db
+                archive_db_name = "oevk.db"
+                # Create ZIP archive containing the database
+                with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zipf:
+                    zipf.write(db_path, archive_db_name)
+                self.logger.logger.info(
+                    f"Packaged database file: {db_file} as {archive_db_name} ({db_path.stat().st_size} bytes)"
+                )
+                break
+
+        if not db_file_used:
+            raise FileNotFoundError(
+                f"No database file found. Tried: {', '.join(db_files_to_try)}"
+            )
 
         # Calculate file size and checksum
         file_size = archive_path.stat().st_size
@@ -156,6 +181,7 @@ class FilePackager:
             "file_size": file_size,
             "checksum": checksum,
             "created_at": datetime.now(),
+            "database_file": db_file_used,  # Track which database file was used
         }
 
     def package_all(self, data_dir: str, release_tag: str) -> List[Dict[str, Any]]:

@@ -71,7 +71,7 @@ As a data consumer, I need to access packaged releases of transformed Hungarian 
 
 ### Functional Requirements
 - **FR-001**: System MUST create compressed archive files containing all exported CSV data from the transformation pipeline, including split address files organized by settlement
-- **FR-002**: System MUST create a compressed archive file containing the DuckDB database file from the transformation pipeline
+- **FR-002**: System MUST create a compressed archive file containing the main transformed database file (oevk.db) from the transformation pipeline
 - **FR-003**: System MUST generate unique release tags based on the current date in YYYYMMDD-HHMM format
 - **FR-004**: System MUST automatically create GitHub releases when the transformation pipeline completes successfully
 - **FR-005**: System MUST tag the commit with the release tag when a release is created

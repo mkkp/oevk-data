@@ -13,7 +13,7 @@
   - `addresses.csv` → `20250929_222318_Address.csv`
   - `counties.csv` → `20250929_222318_County.csv`
   - `settlements.csv` → `20250929_222318_Settlement.csv`
-  - `database.duckdb` → `../data/oevk.db`
+  - `database.duckdb` → `../data/oevk.db` (main database file)
 
 ### 3. Packaging System Functional
 - **CSV Archive**: `oevk-data-csv-test-release.zip` (40.9 MB)

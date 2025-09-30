@@ -51,7 +51,8 @@ class TestGitHubIntegration:
 
         assert result["id"] == 123
         assert result["tag_name"] == "v1.0.0"
-        mock_subprocess.assert_called_once()
+        # Should be called twice: once to create release, once to check if it exists
+        assert mock_subprocess.call_count == 2
 
     @patch("subprocess.run")
     def test_create_release_with_draft_and_prerelease(self, mock_subprocess):
@@ -69,21 +70,40 @@ class TestGitHubIntegration:
             prerelease=True,
         )
 
-        mock_subprocess.assert_called_once()
+        # Should be called twice: once to create release, once to check if it exists
+        assert mock_subprocess.call_count == 2
 
     @patch("subprocess.run")
     def test_upload_artifact_success(self, mock_subprocess):
         """Test successful artifact upload."""
-        mock_result = MagicMock()
-        mock_result.stdout = json.dumps(
+        # Mock responses for get_release_by_id, upload, and get_release_by_id again
+        mock_result1 = MagicMock()
+        mock_result1.stdout = json.dumps(
             {
-                "id": 789,
-                "name": "artifact.zip",
-                "size": 1024,
-                "browser_download_url": "https://example.com/artifact.zip",
+                "id": 123,
+                "tag_name": "v1.0.0",
+                "name": "Release v1.0.0",
             }
         )
-        mock_subprocess.return_value = mock_result
+        mock_result2 = MagicMock()
+        mock_result2.stdout = ""  # gh release upload returns empty stdout
+        mock_result3 = MagicMock()
+        mock_result3.stdout = json.dumps(
+            {
+                "id": 123,
+                "tag_name": "v1.0.0",
+                "name": "Release v1.0.0",
+                "assets": [
+                    {
+                        "id": 789,
+                        "name": "artifact.zip",
+                        "size": 1024,
+                        "browser_download_url": "https://example.com/artifact.zip",
+                    }
+                ],
+            }
+        )
+        mock_subprocess.side_effect = [mock_result1, mock_result2, mock_result3]
 
         github = GitHubIntegration("test-owner", "test-repo", "test-token")
         result = github.upload_artifact(
@@ -94,7 +114,8 @@ class TestGitHubIntegration:
 
         assert result["id"] == 789
         assert result["name"] == "artifact.zip"
-        mock_subprocess.assert_called_once()
+        # Should be called 3 times: get release, upload artifact, get updated release
+        assert mock_subprocess.call_count == 3
 
     @patch("subprocess.run")
     def test_get_release_by_tag_found(self, mock_subprocess):
@@ -319,7 +340,8 @@ class TestGitHubIntegrationEdgeCases:
             body="Test release with emoji 🎉 and special chars!",
         )
 
-        mock_subprocess.assert_called_once()
+        # Should be called twice: once to create release, once to check if it exists
+        assert mock_subprocess.call_count == 2
 
     @patch("subprocess.run")
     def test_upload_artifact_with_spaces_in_path(self, mock_subprocess):
@@ -329,13 +351,43 @@ class TestGitHubIntegrationEdgeCases:
         mock_subprocess.return_value = mock_result
 
         github = GitHubIntegration("test-owner", "test-repo", "test-token")
+        # Mock responses for get_release_by_id (twice) and upload
+        mock_result1 = MagicMock()
+        mock_result1.stdout = json.dumps(
+            {
+                "id": 123,
+                "tag_name": "v1.0.0",
+                "name": "Release v1.0.0",
+            }
+        )
+        mock_result2 = MagicMock()
+        mock_result2.stdout = json.dumps({"id": 456})
+        mock_result3 = MagicMock()
+        mock_result3.stdout = json.dumps(
+            {
+                "id": 123,
+                "tag_name": "v1.0.0",
+                "name": "Release v1.0.0",
+                "assets": [
+                    {
+                        "id": 456,
+                        "name": "artifact with spaces.zip",
+                        "state": "uploaded",
+                        "browser_download_url": "https://github.com/test-owner/test-repo/releases/download/v1.0.0/artifact%20with%20spaces.zip",
+                    }
+                ],
+            }
+        )
+        mock_subprocess.side_effect = [mock_result1, mock_result2, mock_result3]
+
         github.upload_artifact(
             release_id="123",
             artifact_path="/path/with spaces/artifact.zip",
             artifact_name="artifact with spaces.zip",
         )
 
-        mock_subprocess.assert_called_once()
+        # Should be called three times: get release, upload artifact, get release again
+        assert mock_subprocess.call_count == 3
 
     @patch("subprocess.run")
     def test_list_releases_with_zero_limit(self, mock_subprocess):

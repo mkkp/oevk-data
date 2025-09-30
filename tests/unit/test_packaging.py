@@ -163,7 +163,7 @@ class TestFilePackager:
 
                 with zipfile.ZipFile(archive_path, "r") as zipf:
                     file_list = zipf.namelist()
-                    assert "database.duckdb" in file_list
+                    assert "oevk.db" in file_list
 
     def test_package_database_missing_file(self):
         """Test packaging database when file is missing."""
@@ -172,16 +172,12 @@ class TestFilePackager:
                 # No database file created
 
                 packager = FilePackager(temp_dir)
-                result = packager.package_database(data_dir, "test-release")
 
-                assert result["artifact_type"] == "database_archive"
-                # Should still create an archive, but it will be empty
-                archive_path = Path(result["file_path"])
-                assert archive_path.exists()
+                # Should raise FileNotFoundError when no database files are found
+                with pytest.raises(FileNotFoundError) as exc_info:
+                    packager.package_database(data_dir, "test-release")
 
-                with zipfile.ZipFile(archive_path, "r") as zipf:
-                    file_list = zipf.namelist()
-                    assert len(file_list) == 0  # Empty archive
+                assert "No database file found" in str(exc_info.value)
 
     def test_package_all_success(self):
         """Test packaging all files successfully."""

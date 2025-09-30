@@ -87,7 +87,7 @@
   - `PostalCode.csv` - Postal code data
   - `PostalCode_Settlement.csv` - Postal code to settlement mapping
   - `SettlementIndividualElectoralDistrict.csv` - Settlement to electoral district mapping
-- **Database Archive**: `oevk-data-db-{tag}.zip` - Contains database.duckdb
+- **Database Archive**: `oevk-data-db-{tag}.zip` - Contains oevk.db (main transformed database)
 - **Release Metadata**: JSON metadata with validation results and performance metrics
 
 #### Release Tags

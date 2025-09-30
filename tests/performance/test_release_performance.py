@@ -212,9 +212,28 @@ class TestReleasePerformance:
                             message="Referential integrity maintained",
                         )
 
-                        # Time validation
-                        start_time = time.time()
-                        metadata = workflow.validate_release_data()
+                        # Mock the entire workflow directories with mock Path objects
+                        mock_exports_dir = MagicMock()
+                        mock_exports_dir.exists.return_value = True
+                        mock_staging_dir = MagicMock()
+                        mock_staging_dir.exists.return_value = True
+
+                        # Mock specific file paths
+                        csv_mock = MagicMock()
+                        csv_mock.exists.return_value = True
+                        db_mock = MagicMock()
+                        db_mock.exists.return_value = True
+
+                        mock_exports_dir.__truediv__.return_value = csv_mock
+                        mock_staging_dir.__truediv__.return_value = db_mock
+
+                        with patch.object(workflow, "exports_dir", mock_exports_dir):
+                            with patch.object(
+                                workflow, "staging_dir", mock_staging_dir
+                            ):
+                                # Time validation
+                                start_time = time.time()
+                                metadata = workflow.validate_release_data()
                 end_time = time.time()
 
                 execution_time = end_time - start_time

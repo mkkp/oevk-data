@@ -113,7 +113,7 @@
 3. **Release Metadata**: JSON metadata with validation results
 
 ### **Testing Coverage** ✅
-- **Total Tests**: 159 tests (155 passed, 4 skipped)
+- **Total Tests**: 157 tests (153 passed, 4 skipped, 2 warnings)
 - **Contract Tests**: 33 tests (29 passed, 4 skipped)
 - **Unit Tests**: 32 tests (all passed)
 - **Integration Tests**: 18 tests (all passed)

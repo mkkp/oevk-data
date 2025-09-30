@@ -53,46 +53,40 @@ class ReleaseWorkflow:
         """Validate release data before packaging."""
         self.logger.log_start("release data validation")
 
-        # Run comprehensive validation on both directories
-        staging_validator = DataValidator(str(self.staging_dir))
+        # Run comprehensive validation on exports directory (where all files are located)
         exports_validator = DataValidator(str(self.exports_dir))
-
-        staging_validation = staging_validator.validate_all()
         exports_validation = exports_validator.validate_all()
 
         # Get file information for metadata
-        staging_files = []
         export_files = []
 
-        # Check for CSV files in exports directory
-        csv_files = ["addresses.csv", "settlements.csv", "counties.csv"]
-        for csv_file in csv_files:
-            if (self.exports_dir / csv_file).exists():
-                export_files.append(csv_file)
+        # Check for all required files in exports directory
+        required_files = [
+            "addresses.csv",
+            "settlements.csv",
+            "counties.csv",
+            "database.duckdb",
+        ]
+        for file_name in required_files:
+            if (self.exports_dir / file_name).exists():
+                export_files.append(file_name)
 
-        # Check for database file in staging directory
-        db_source = self.staging_dir / "database.duckdb"
-        if db_source.exists():
-            staging_files.append("database.duckdb")
-
-        total_files = len(staging_files) + len(export_files)
+        total_files = len(export_files)
         total_size = 1  # Default minimum size for validation-only runs
 
-        # Combine validation results - consider it passed if both directories have required files
+        # Combine validation results - consider it passed if exports directory has all required files
         validation_status = (
             "passed"
-            if (len(export_files) >= 3 and len(staging_files) >= 1)
+            if (len(export_files) >= 4)  # All 4 required files
             else "failed"
         )
 
         # Collect validation errors
         validation_errors = []
-        if len(export_files) < 3:
+        if len(export_files) < 4:
             validation_errors.append(
-                f"Missing CSV files in exports: found {len(export_files)} of 3"
+                f"Missing required files in exports: found {len(export_files)} of 4"
             )
-        if len(staging_files) < 1:
-            validation_errors.append("Missing database file in staging")
 
         # Generate a deterministic pipeline run ID
         pipeline_run_id = f"validation_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -128,8 +122,8 @@ class ReleaseWorkflow:
         csv_artifact = self.packager.package_csv_files(self.exports_dir, tag)
         artifacts.append(csv_artifact)
 
-        # Package database files
-        db_artifact = self.packager.package_database(self.staging_dir, tag)
+        # Package database files - use exports directory which has the database link
+        db_artifact = self.packager.package_database(self.exports_dir, tag)
         artifacts.append(db_artifact)
 
         # Create release package using the correct model structure

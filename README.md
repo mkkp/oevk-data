@@ -207,8 +207,8 @@ Each release creates two main artifacts:
    - `polling_stations.csv` - Polling station details
    - `electoral_districts.csv` - Electoral district information
 
-2. **Database Archive** (`oevk-data-db-{tag}.zip`): Contains DuckDB database
-   - `database.duckdb` - Complete relational database with all tables
+2. **Database Archive** (`oevk-data-db-{tag}.zip`): Contains main transformed database
+   - `oevk.db` - Complete relational database with all tables (main transformed database)
 
 ### Release Performance Targets
 
