@@ -10,3 +10,4 @@ indent-style = "space"
 [per-file-ignores]
 "__init__.py" = ["F401"]
 "tests/**/*.py" = ["S101"]
+"src/release/**/*.py" = ["F401", "F403"]
