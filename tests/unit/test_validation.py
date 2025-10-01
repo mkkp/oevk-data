@@ -291,6 +291,9 @@ class TestReleaseDataValidator:
                 "settlements.csv",
                 "counties.csv",
                 "database.duckdb",
+                "PublicSpaceName.csv",
+                "PublicSpaceType.csv",
+                "SettlementPublicSpaces.csv",
             ]:
                 (Path(temp_dir) / file_name).touch()
 
@@ -421,6 +424,15 @@ class TestReleaseDataValidator:
             )
             (Path(temp_dir) / "counties.csv").write_text("id,name\n" + "1,Test\n" * 50)
             (Path(temp_dir) / "database.duckdb").write_text("x" * 2000)
+            (Path(temp_dir) / "PublicSpaceName.csv").write_text(
+                "id,name\n" + "1,Test\n" * 10
+            )
+            (Path(temp_dir) / "PublicSpaceType.csv").write_text(
+                "id,name\n" + "1,Test\n" * 10
+            )
+            (Path(temp_dir) / "SettlementPublicSpaces.csv").write_text(
+                "id,name\n" + "1,Test\n" * 10
+            )
 
             validator = DataValidator(temp_dir)
             summary = validator.validate_all()

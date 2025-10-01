@@ -292,6 +292,9 @@ def run_pipeline(args):
                 "Address",
                 "PostalCode",
                 "PostalCode_Settlement",
+                "PublicSpaceName",
+                "PublicSpaceType",
+                "SettlementPublicSpaces",
             ]
             for table in target_tables:
                 target_counts_before[table] = conn.execute(
@@ -311,6 +314,12 @@ def run_pipeline(args):
                     parallel=not args.no_parallel,
                     db_path=args.db_path,
                 )
+
+            # Run public space extraction after main transformation
+            logger.info("=== PUBLIC SPACE EXTRACTION ===")
+            from src.etl.transform_public_spaces import extract_public_space_entities
+
+            extract_public_space_entities(conn)
 
             # Get row counts after transformation and calculate deltas
             total_rows_transformed = 0

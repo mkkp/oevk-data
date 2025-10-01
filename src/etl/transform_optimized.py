@@ -5,16 +5,20 @@ import time
 import concurrent.futures
 from typing import List, Tuple
 
-from src.etl.hashing import (
-    hash_county_id,
-    hash_settlement_id,
-    hash_oevk_id,
-    hash_tevk_id,
-    hash_postal_code_id,
-    hash_postal_code_settlement_id,
-    hash_polling_station_id,
-    hash_address_id,
-)
+# Hash functions are now implemented inline using DuckDB's built-in functions
+# from src.etl.hashing import (
+#     hash_county_id,
+#     hash_settlement_id,
+#     hash_oevk_id,
+#     hash_tevk_id,
+#     hash_postal_code_id,
+#     hash_postal_code_settlement_id,
+#     hash_polling_station_id,
+#     hash_public_space_type_id,
+#     hash_public_space_name_id,
+#     hash_settlement_public_spaces_id,
+#     hash_address_id,
+# )
 from src.utils.pipeline_logging import get_logger
 
 logger = get_logger(__name__)
@@ -22,23 +26,51 @@ logger = get_logger(__name__)
 
 def register_hash_functions(db_connection: duckdb.DuckDBPyConnection) -> None:
     """Register hash functions with DuckDB."""
-    # Try to register functions, but ignore if they're already registered
+    # Check if macros already exist to avoid catalog write-write conflicts
+    # This is especially important for parallel processing
     try:
-        db_connection.create_function("hash_county_id", hash_county_id)
-        db_connection.create_function("hash_settlement_id", hash_settlement_id)
-        db_connection.create_function("hash_oevk_id", hash_oevk_id)
-        db_connection.create_function("hash_tevk_id", hash_tevk_id)
-        db_connection.create_function("hash_postal_code_id", hash_postal_code_id)
-        db_connection.create_function(
-            "hash_postal_code_settlement_id", hash_postal_code_settlement_id
-        )
-        db_connection.create_function(
-            "hash_polling_station_id", hash_polling_station_id
-        )
-        db_connection.create_function("hash_address_id", hash_address_id)
-    except Exception:
-        # Functions are already registered, which is fine
-        pass
+        # Create SQL UDFs for hash functions using DuckDB's macro syntax
+        # Using md5 instead of xxhash64 since DuckDB doesn't have xxhash64 built-in
+        db_connection.execute("""
+            CREATE OR REPLACE MACRO hash_county_id(county_code) AS lower(substring(md5(county_code), 1, 16))
+        """)
+
+        db_connection.execute("""
+            CREATE OR REPLACE MACRO hash_settlement_id(county_code, settlement_code) AS lower(substring(md5(county_code || '|' || settlement_code), 1, 16))
+        """)
+
+        db_connection.execute("""
+            CREATE OR REPLACE MACRO hash_oevk_id(county_code, oevk) AS lower(substring(md5(county_code || '|' || oevk), 1, 16))
+        """)
+
+        db_connection.execute("""
+            CREATE OR REPLACE MACRO hash_tevk_id(county_code, settlement_code, tevk, oevk) AS lower(substring(md5(county_code || '|' || settlement_code || '|' || COALESCE(tevk, '') || '|' || oevk), 1, 16))
+        """)
+
+        db_connection.execute("""
+            CREATE OR REPLACE MACRO hash_postal_code_id(postal_code) AS lower(substring(md5(postal_code), 1, 16))
+        """)
+
+        db_connection.execute("""
+            CREATE OR REPLACE MACRO hash_polling_station_id(county_code, settlement_code, oevk, tevk, polling_station_address) AS lower(substring(md5(county_code || '|' || settlement_code || '|' || oevk || '|' || COALESCE(tevk, '') || '|' || polling_station_address), 1, 16))
+        """)
+
+        db_connection.execute("""
+            CREATE OR REPLACE MACRO hash_address_id(county_code, settlement_code, public_space_name, public_space_type, house_number, building, staircase, postal_code) AS lower(substring(md5(county_code || '|' || settlement_code || '|' || public_space_name || '|' || public_space_type || '|' || house_number || '|' || COALESCE(building, '') || '|' || COALESCE(staircase, '') || '|' || postal_code), 1, 16))
+        """)
+
+        db_connection.execute("""
+            CREATE OR REPLACE MACRO hash_postal_code_settlement_id(postal_code_id, settlement_id) AS lower(substring(md5(postal_code_id || '|' || settlement_id), 1, 16))
+        """)
+
+        logger.debug("Hash functions registered as SQL macros using MD5")
+    except Exception as e:
+        if "Catalog write-write conflict" in str(e):
+            logger.debug(
+                "Hash functions already registered, skipping duplicate registration"
+            )
+        else:
+            raise
 
 
 def transform_all_optimized(
@@ -135,7 +167,7 @@ def transform_counties(db_connection: duckdb.DuckDBPyConnection, run_tag: str) -
         """
         INSERT INTO County (ID, CountyCode, CountyName)
         SELECT 
-            hash_county_id(county_code) as ID,
+            lower(substring(md5(county_code), 1, 16)) as ID,
             county_code,
             MAX(county_name) as CountyName
         FROM staging_korzet
@@ -161,10 +193,10 @@ def transform_settlements(
         """
         INSERT INTO Settlement (ID, SettlementCode, SettlementName, County_ID)
         SELECT 
-            hash_settlement_id(county_code, settlement_code) as ID,
+            lower(substring(md5(county_code || '|' || settlement_code), 1, 16)) as ID,
             settlement_code,
             MAX(settlement_name) as SettlementName,
-            hash_county_id(county_code) as County_ID
+            lower(substring(md5(county_code), 1, 16)) as County_ID
         FROM staging_korzet
         WHERE run_tag = ?
         GROUP BY county_code, settlement_code
@@ -188,12 +220,12 @@ def transform_national_individual_electoral_districts(
         """
         INSERT INTO NationalIndividualElectoralDistrict (ID, OEVK, Name, Center, Polygon, County_ID)
         SELECT 
-            hash_oevk_id(county_code, oevk_code) as ID,
+            lower(substring(md5(county_code || '|' || oevk_code), 1, 16)) as ID,
             oevk_code,
             MAX(settlement_name) || ' ' || oevk_code as Name,
             NULL as Center,  -- Will be populated from JSON if available
             NULL as Polygon, -- Will be populated from JSON if available
-            hash_county_id(county_code) as County_ID
+            lower(substring(md5(county_code), 1, 16)) as County_ID
         FROM staging_korzet
         WHERE run_tag = ?
         GROUP BY county_code, oevk_code
@@ -258,9 +290,9 @@ def transform_settlement_individual_electoral_districts(
                 THEN MAX(settlement_name) || ' ' || tevk_code
                 ELSE MAX(settlement_name)
             END as Name,
-            hash_county_id(county_code) as County_ID,
-            hash_settlement_id(county_code, settlement_code) as Settlement_ID,
-            hash_oevk_id(county_code, oevk_code) as NationalIndividualElectoralDistrict_ID
+            lower(substring(md5(county_code), 1, 16)) as County_ID,
+            lower(substring(md5(county_code || '|' || settlement_code), 1, 16)) as Settlement_ID,
+            lower(substring(md5(county_code || '|' || oevk_code), 1, 16)) as NationalIndividualElectoralDistrict_ID
         FROM staging_korzet
         WHERE run_tag = ?
         GROUP BY county_code, settlement_code, tevk_code, oevk_code
@@ -294,9 +326,7 @@ def transform_polling_stations(
                 COALESCE(tevk_code, '-'), polling_station_address
             ) as ID,
             polling_station_address as PollingStationAddress,
-            hash_tevk_id(
-                county_code, settlement_code, COALESCE(tevk_code, '-'), oevk_code
-            ) as SettlementIndividualElectoralDistrict_ID,
+            hash_tevk_id(county_code, settlement_code, COALESCE(tevk_code, '-'), oevk_code) as SettlementIndividualElectoralDistrict_ID,
             hash_county_id(county_code) as County_ID,
             hash_settlement_id(county_code, settlement_code) as Settlement_ID,
             hash_oevk_id(county_code, oevk_code) as NationalIndividualElectoralDistrict_ID
@@ -474,9 +504,9 @@ def transform_addresses_parallel(
     # Track timing
     start_time = time.time()
 
-    # Get database path for creating separate connections
-    # DuckDB doesn't expose database_path setting, so we need to pass it differently
-    # For now, we'll use a workaround by passing the database connection string
+    # Register hash functions in main connection first to ensure they exist
+    # This prevents catalog write-write conflicts in parallel threads
+    register_hash_functions(db_connection)
 
     # Process chunks in parallel with better error handling
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
@@ -585,8 +615,8 @@ def process_chunk_parallel(
     # Create separate database connection for thread safety
     db_connection = duckdb.connect(db_path)
 
-    # Register hash functions for this connection
-    register_hash_functions(db_connection)
+    # Hash functions are already registered in main thread, no need to register again
+    # This prevents "Catalog write-write conflict" errors
 
     # Calculate global OriginalOrder starting from offset + 1
     global_order_start = offset + 1

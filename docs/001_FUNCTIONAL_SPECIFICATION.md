@@ -14,7 +14,7 @@ This specification defines a **transformer program** that downloads Hungarian el
 - `Korzet_allomany_orszagos.zip` → single large CSV (>3M rows): address-to-polling-district coverage with TEVK/OEVK, postal codes, and polling station info.
 
 **Outputs**
-- CSV for each target table (`County`, `Settlement`, `NationalIndividualElectoralDistrict`, `SettlementIndividualElectoralDistrict`, `PostalCode`, `PostalCode_Settlement`, `PollingStation`).
+- CSV for each target table (`County`, `Settlement`, `NationalIndividualElectoralDistrict`, `SettlementIndividualElectoralDistrict`, `PostalCode`, `PostalCode_Settlement`, `PollingStation`, `PublicSpaceName`, `PublicSpaceType`, `SettlementPublicSpaces`).
 - **Partitioned Address exports**: one CSV per `Settlement` (split address files), with no consolidated `Address.csv`.
 
 **Key design choices**
@@ -32,8 +32,9 @@ This specification defines a **transformer program** that downloads Hungarian el
 - Parsing (JSON + CSV with semicolon delimiters and UTF‑8).
 - Staging loads with minimal type coercion.
 - Transform to the target relational model shown here.
+- **Public space entity extraction** from addresses.
 - CSV exports for all target tables except Address; **Address** split by `Settlement` only (no consolidated file).
-- Idempotent reruns (safe to reprocess the same day’s files).
+- Idempotent reruns (safe to reprocess the same day's files).
 - Basic data validation and referential integrity checks.
 
 ### Out-of-scope

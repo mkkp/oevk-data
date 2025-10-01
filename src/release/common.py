@@ -22,6 +22,9 @@ class ReleaseUtils:
             "settlements.csv",
             "counties.csv",
             "database.duckdb",
+            "PublicSpaceName.csv",
+            "PublicSpaceType.csv",
+            "SettlementPublicSpaces.csv",
         ]
 
     @staticmethod
@@ -36,6 +39,9 @@ class ReleaseUtils:
             "PostalCode.csv",
             "PostalCode_Settlement.csv",
             "SettlementIndividualElectoralDistrict.csv",
+            "PublicSpaceName.csv",
+            "PublicSpaceType.csv",
+            "SettlementPublicSpaces.csv",
         ]
 
     @staticmethod
@@ -52,6 +58,9 @@ class ReleaseUtils:
             "settlements.csv": 100,  # 100B minimum
             "counties.csv": 50,  # 50B minimum
             "database.duckdb": 1000,  # 1KB minimum
+            "PublicSpaceName.csv": 50,  # 50B minimum
+            "PublicSpaceType.csv": 50,  # 50B minimum
+            "SettlementPublicSpaces.csv": 50,  # 50B minimum
         }
 
     @staticmethod

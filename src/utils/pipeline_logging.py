@@ -255,3 +255,102 @@ class PipelineMetrics:
             }
 
         return metrics
+
+
+class PublicSpaceExtractionMetrics:
+    """
+    Specialized metrics tracking for public space extraction operations.
+    """
+
+    def __init__(self, pipeline_name: str = "public_space_extraction"):
+        self.pipeline_name = pipeline_name
+        self.logger = get_logger(f"pipeline.metrics.{pipeline_name}")
+        self.start_time: Optional[float] = None
+        self.step_times: Dict[str, float] = {}
+        self.entity_counts: Dict[str, int] = {}
+
+    def start_extraction(self) -> None:
+        """Start public space extraction timing."""
+        self.start_time = time.time()
+        self.logger.info(f"Public space extraction {self.pipeline_name} started")
+
+    def log_entity_extraction_start(self, entity_type: str, **kwargs) -> None:
+        """Log the start of entity extraction."""
+        step_name = f"extract_{entity_type}"
+        step_start = time.time()
+        self.step_times[step_name] = step_start
+        message = f"Extracting {entity_type}"
+        if kwargs:
+            details = " ".join([f"{k}={v}" for k, v in kwargs.items()])
+            message += f" - {details}"
+        self.logger.info(message)
+
+    def log_entity_extraction_completion(
+        self, entity_type: str, count: int, unique_count: int = 0, **kwargs
+    ) -> None:
+        """Log the completion of entity extraction with counts."""
+        step_name = f"extract_{entity_type}"
+        if step_name in self.step_times:
+            duration = time.time() - self.step_times[step_name]
+            self.entity_counts[entity_type] = count
+
+            message = f"Extracted {entity_type} - {count} total, {unique_count} unique in {duration:.2f}s"
+            if kwargs:
+                details = " ".join([f"{k}={v}" for k, v in kwargs.items()])
+                message += f" - {details}"
+            self.logger.info(message)
+
+    def log_hash_generation_start(self, entity_type: str, count: int) -> None:
+        """Log the start of hash ID generation."""
+        step_name = f"hash_{entity_type}"
+        step_start = time.time()
+        self.step_times[step_name] = step_start
+        self.logger.info(f"Generating hash IDs for {entity_type} - {count} entities")
+
+    def log_hash_generation_completion(self, entity_type: str) -> None:
+        """Log the completion of hash ID generation."""
+        step_name = f"hash_{entity_type}"
+        if step_name in self.step_times:
+            duration = time.time() - self.step_times[step_name]
+            self.logger.info(f"Generated hash IDs for {entity_type} in {duration:.2f}s")
+
+    def log_table_population_start(self, table_name: str, row_count: int) -> None:
+        """Log the start of table population."""
+        step_name = f"populate_{table_name}"
+        step_start = time.time()
+        self.step_times[step_name] = step_start
+        self.logger.info(f"Populating {table_name} table with {row_count} rows")
+
+    def log_table_population_completion(self, table_name: str) -> None:
+        """Log the completion of table population."""
+        step_name = f"populate_{table_name}"
+        if step_name in self.step_times:
+            duration = time.time() - self.step_times[step_name]
+            self.logger.info(f"Populated {table_name} table in {duration:.2f}s")
+
+    def end_extraction(self) -> Dict[str, Any]:
+        """End extraction timing and return summary metrics."""
+        if self.start_time:
+            total_duration = time.time() - self.start_time
+
+            summary = {
+                "pipeline_name": self.pipeline_name,
+                "total_duration": total_duration,
+                "entity_counts": self.entity_counts,
+                "step_durations": {},
+            }
+
+            # Calculate step durations
+            for step_name, step_start in self.step_times.items():
+                step_duration = time.time() - step_start
+                summary["step_durations"][step_name] = step_duration
+
+            # Log summary
+            self.logger.info(
+                f"Public space extraction completed in {total_duration:.2f}s - "
+                f"Entities: {', '.join([f'{k}: {v}' for k, v in self.entity_counts.items()])}"
+            )
+
+            return summary
+
+        return {"error": "Extraction not started"}

@@ -62,12 +62,26 @@ The unique key is indicated by UC - Unique Constraint.
     * County_ID (FK): Link to the County entity.
     * Settlement_ID (FK): Link to the Settlement entity.
     * NationalIndividualElectoralDistrict_ID (FK): Link to the NationalIndividualElectoralDistrict entity.
-8. **Address**
+8. **PublicSpaceName**
+    * ID (PK): Unique identifier (deterministic hash)
+    * PublicSpaceName: The name of the public space (e.g., "Kossuth Lajos", "Petőfi Sándor")
+    
+9. **PublicSpaceType**
+    * ID (PK): Unique identifier (deterministic hash)
+    * PublicSpaceType: The type of the public space (e.g., "utca", "tér", "út", "köz")
+    
+10. **SettlementPublicSpaces**
+    * ID (PK): Unique identifier (deterministic hash)
+    * Settlement_ID (FK): Link to the Settlement entity
+    * PublicSpaceName_ID (FK): Link to the PublicSpaceName entity
+    * PublicSpaceType_ID (FK): Link to the PublicSpaceType entity
+    
+11. **Address**
     * ID (PK): Unique identifier
     * Sequence: For example, the loading sequence.
     * FullAddress: The full address, concatenated from multiple fields.
-    * PublicSpaceName: The name of the public space.
-    * PublicSpaceType: The type of the public space.
+    * PublicSpaceName_ID (FK): Link to the PublicSpaceName entity
+    * PublicSpaceType_ID (FK): Link to the PublicSpaceType entity
     * HouseNumber: The house number.
     * Building: The building letter/number.
     * Staircase: The staircase letter/number.
@@ -88,6 +102,9 @@ The unique key is indicated by UC - Unique Constraint.
 * **Settlement** *--* **PostalCode**: An n-to-m relationship; a settlement can have multiple postal codes, and a postal code can cover multiple settlements (although this is rare in practice). The relationship is managed through the **PostalCode_Settlement** junction table.
 * **SettlementIndividualElectoralDistrict** 1--* **PollingStation**: One TEVK can have multiple polling stations.
 * **PollingStation** 1--* **Address**: One polling station serves multiple addresses.
+* **Settlement** *--* **PublicSpaceName**: A settlement can have multiple public space names, and a public space name can appear in multiple settlements. The relationship is managed through the **SettlementPublicSpaces** junction table.
+* **Settlement** *--* **PublicSpaceType**: A settlement can have multiple public space types, and a public space type can appear in multiple settlements. The relationship is managed through the **SettlementPublicSpaces** junction table.
+* **PublicSpaceName** *--* **PublicSpaceType**: A public space name can have multiple types, and a public space type can be used by multiple names. The relationship is managed through the **SettlementPublicSpaces** junction table.
 
 #### Pseudocode for Derived Fields
 
@@ -180,11 +197,28 @@ erDiagram
         int NationalIndividualElectoralDistrict_ID FK "Link to the OEVK entity"
     }
 
+    PublicSpaceName {
+        int ID PK "Unique identifier (deterministic hash)"
+        string PublicSpaceName "The name of the public space"
+    }
+
+    PublicSpaceType {
+        int ID PK "Unique identifier (deterministic hash)"
+        string PublicSpaceType "The type of the public space"
+    }
+
+    SettlementPublicSpaces {
+        int ID PK "Unique identifier (deterministic hash)"
+        int Settlement_ID FK "Link to the Settlement entity"
+        int PublicSpaceName_ID FK "Link to the PublicSpaceName entity"
+        int PublicSpaceType_ID FK "Link to the PublicSpaceType entity"
+    }
+
     Address {
         int ID PK "Unique identifier"
         string FullAddress "The full address, concatenated from multiple fields"
-        string PublicSpaceName "The name of the public space"
-        string PublicSpaceType "The type of the public space"
+        int PublicSpaceName_ID FK "Link to the PublicSpaceName entity"
+        int PublicSpaceType_ID FK "Link to the PublicSpaceType entity"
         string HouseNumber "The house number"
         string Building "The building letter"
         string Staircase "The staircase letter"
@@ -205,6 +239,9 @@ erDiagram
     NationalIndividualElectoralDistrict ||--o{ SettlementIndividualElectoralDistrict : "contains"
     SettlementIndividualElectoralDistrict ||--o{ PollingStation : "contains"
     PollingStation ||--o{ Address : "contains"
+    Settlement }o--o{ SettlementPublicSpaces : "n-m relationship"
+    PublicSpaceName }o--o{ SettlementPublicSpaces : "n-m relationship"
+    PublicSpaceType }o--o{ SettlementPublicSpaces : "n-m relationship"
 
     %% Redundant but specified relationships for clarity
 
@@ -213,6 +250,8 @@ erDiagram
     NationalIndividualElectoralDistrict ||..o{ Address : "references"
     SettlementIndividualElectoralDistrict ||..o{ Address : "references"
     PostalCode ||..o{ Address : "references"
+    PublicSpaceName ||..o{ Address : "references"
+    PublicSpaceType ||..o{ Address : "references"
     County ||..o{ PollingStation : "references"
     Settlement ||..o{ PollingStation : "references"
     NationalIndividualElectoralDistrict ||..o{ PollingStation : "references"
@@ -314,6 +353,9 @@ The following table contains the translations for the Hungarian names and identi
 | Iranyitoszam_Telepules                 | PostalCode_Settlement                |
 | Szavazokor                             | PollingStation                       |
 | Cim                                    | Address                              |
+| KozteruletNev                          | PublicSpaceName                      |
+| KozteruletJelleg                       | PublicSpaceType                      |
+| Telepules_Kozteruletek                 | SettlementPublicSpaces               |
 | **Attributes & General Terms**         |                                      |
 | Azonosító                              | Identifier                           |
 | Kód                                    | Code                                 |
