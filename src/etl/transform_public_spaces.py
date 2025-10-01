@@ -17,6 +17,27 @@ from src.utils.pipeline_logging import get_logger
 logger = get_logger(__name__)
 
 
+def register_public_space_hash_functions(
+    db_connection: duckdb.DuckDBPyConnection,
+) -> None:
+    """Register public space hash functions with DuckDB as SQL macros."""
+    # Create SQL macros for public space hash functions using DuckDB's macro syntax
+    # Using md5 instead of xxhash64 since DuckDB doesn't have xxhash64 built-in
+    db_connection.execute("""
+        CREATE OR REPLACE MACRO hash_public_space_name_id(public_space_name) AS lower(substring(md5(public_space_name), 1, 16))
+    """)
+
+    db_connection.execute("""
+        CREATE OR REPLACE MACRO hash_public_space_type_id(public_space_type) AS lower(substring(md5(public_space_type), 1, 16))
+    """)
+
+    db_connection.execute("""
+        CREATE OR REPLACE MACRO hash_settlement_public_spaces_id(settlement_id, public_space_name_id, public_space_type_id) AS lower(substring(md5(settlement_id || '|' || public_space_name_id || '|' || public_space_type_id), 1, 16))
+    """)
+
+    logger.debug("Public space hash functions registered as SQL macros using MD5")
+
+
 def extract_public_space_entities(db_connection: duckdb.DuckDBPyConnection) -> None:
     """
     Extract unique public space names and types from address data.
@@ -33,18 +54,8 @@ def extract_public_space_entities(db_connection: duckdb.DuckDBPyConnection) -> N
     """
     logger.info("Starting public space entity extraction")
 
-    # Register hashing functions with DuckDB
-    # Note: DuckDB functions are registered per connection, so we can safely register them
-    # If they already exist, DuckDB will handle it internally
-    db_connection.create_function(
-        "hash_public_space_name_id", hash_public_space_name_id
-    )
-    db_connection.create_function(
-        "hash_public_space_type_id", hash_public_space_type_id
-    )
-    db_connection.create_function(
-        "hash_settlement_public_spaces_id", hash_settlement_public_spaces_id
-    )
+    # Register hashing functions with DuckDB as SQL macros
+    register_public_space_hash_functions(db_connection)
 
     # Create the new tables
     create_public_space_tables(db_connection)

@@ -353,7 +353,8 @@ class TestPublicSpaceTransformation:
         name_result = conn.execute(
             "SELECT ID, PublicSpaceName FROM PublicSpaceName"
         ).fetchone()
-        expected_name_id = hash_public_space_name_id("Kossuth")
+        # Expected MD5 hash for "Kossuth" (first 16 chars of MD5 hex digest)
+        expected_name_id = "99d88e842efa2b73"
         assert name_result[0] == expected_name_id
         assert name_result[1] == "Kossuth"
 
@@ -361,19 +362,19 @@ class TestPublicSpaceTransformation:
         type_result = conn.execute(
             "SELECT ID, PublicSpaceType FROM PublicSpaceType"
         ).fetchone()
-        expected_type_id = hash_public_space_type_id("utca")
+        # Expected MD5 hash for "utca" (first 16 chars of MD5 hex digest)
+        expected_type_id = "ae1ae0e97807a3a3"
         assert type_result[0] == expected_type_id
         assert type_result[1] == "utca"
 
         # Check SettlementPublicSpaces ID
         lookup_result = conn.execute("""
-            SELECT ID, Settlement_ID, PublicSpaceName_ID, PublicSpaceType_ID 
+            SELECT ID, Settlement_ID, PublicSpaceName_ID, PublicSpaceType_ID
             FROM SettlementPublicSpaces
         """).fetchone()
 
-        expected_lookup_id = hash_settlement_public_spaces_id(
-            "sett1", expected_name_id, expected_type_id
-        )
+        # Expected MD5 hash for SettlementPublicSpaces (sett1|99d88e842efa2b73|ae1ae0e97807a3a3)
+        expected_lookup_id = "ac953c4e2b267b1f"
         assert lookup_result[0] == expected_lookup_id
         assert lookup_result[1] == "sett1"
         assert lookup_result[2] == expected_name_id

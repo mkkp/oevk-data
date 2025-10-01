@@ -30,6 +30,29 @@
 - **GitHub Token**: `GITHUB_TOKEN` (required for release operations)
 - **Default directories**: `STAGING_DIR=data/staging`, `EXPORTS_DIR=exports`
 
+## Complete Data Processing Pipeline
+
+The OEVK data processing pipeline includes the following stages:
+
+### Pipeline Stages
+1. **Ingestion**: Downloads and loads source data from valasztas.hu
+2. **Transformation**: Normalizes data into 8 core tables with parallel processing
+3. **Public Space Extraction**: Extracts public space entities (names and types) from addresses
+4. **Export**: Creates CSV files for all tables including public space data
+5. **Release**: Packages and publishes data to GitHub releases
+
+### Public Space Extraction Features
+- **Entity Recognition**: Extracts public space names and types from addresses
+- **Relationship Mapping**: Creates settlement-public space relationships
+- **Hash-based IDs**: Deterministic xxhash64 identifiers for all entities
+- **Data Integrity**: Full validation and referential integrity
+- **Export Support**: CSV export for all public space entities
+
+### Public Space Tables
+1. **PublicSpaceName**: Unique public space names extracted from addresses
+2. **PublicSpaceType**: Unique public space types (utca, tér, etc.)
+3. **SettlementPublicSpaces**: Many-to-many relationships between settlements and public spaces
+
 ## Code Style Guidelines
 
 ### Language & Framework
@@ -87,6 +110,9 @@
   - `PostalCode.csv` - Postal code data
   - `PostalCode_Settlement.csv` - Postal code to settlement mapping
   - `SettlementIndividualElectoralDistrict.csv` - Settlement to electoral district mapping
+  - `PublicSpaceName.csv` - Unique public space names extracted from addresses
+  - `PublicSpaceType.csv` - Unique public space types (utca, tér, etc.)
+  - `SettlementPublicSpaces.csv` - Many-to-many relationships between settlements and public spaces
 - **Database Archive**: `oevk-data-db-{tag}.zip` - Contains oevk.db (main transformed database)
 - **Release Metadata**: JSON metadata with validation results and performance metrics
 

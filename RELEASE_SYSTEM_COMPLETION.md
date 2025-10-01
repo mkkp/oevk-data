@@ -27,8 +27,11 @@
    - `PostalCode.csv` - Postal code data
    - `PostalCode_Settlement.csv` - Postal code to settlement mapping
    - `SettlementIndividualElectoralDistrict.csv` - Settlement to electoral district mapping
+   - `PublicSpaceName.csv` - Unique public space names extracted from addresses
+   - `PublicSpaceType.csv` - Unique public space types (utca, tér, etc.)
+   - `SettlementPublicSpaces.csv` - Many-to-many relationships between settlements and public spaces
 
-2. **Database Archive** (`oevk-data-db-{tag}.zip`): Contains oevk.db (main transformed database)
+2. **Database Archive** (`oevk-data-db-{tag}.zip`): Contains oevk.db (main transformed database with public space entities)
 
 3. **Release Metadata**: JSON metadata with validation results and performance metrics
 
