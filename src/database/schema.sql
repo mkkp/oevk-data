@@ -100,6 +100,57 @@ CREATE TABLE IF NOT EXISTS Address (
     FOREIGN KEY (NationalIndividualElectoralDistrict_ID) REFERENCES NationalIndividualElectoralDistrict(ID)
 );
 
+-- PublicSpaceType table
+CREATE TABLE IF NOT EXISTS PublicSpaceType (
+    ID TEXT PRIMARY KEY, -- xxhash64(PublicSpaceType)
+    PublicSpaceType TEXT UNIQUE NOT NULL
+);
+
+-- PublicSpaceName table
+CREATE TABLE IF NOT EXISTS PublicSpaceName (
+    ID TEXT PRIMARY KEY, -- xxhash64(PublicSpaceName)
+    PublicSpaceName TEXT UNIQUE NOT NULL
+);
+
+-- SettlementPublicSpaces junction table
+CREATE TABLE IF NOT EXISTS SettlementPublicSpaces (
+    ID TEXT PRIMARY KEY, -- xxhash64(Settlement_ID|PublicSpaceName_ID|PublicSpaceType_ID)
+    Settlement_ID TEXT NOT NULL,
+    PublicSpaceName_ID TEXT NOT NULL,
+    PublicSpaceType_ID TEXT NOT NULL,
+    FOREIGN KEY (Settlement_ID) REFERENCES Settlement(ID),
+    FOREIGN KEY (PublicSpaceName_ID) REFERENCES PublicSpaceName(ID),
+    FOREIGN KEY (PublicSpaceType_ID) REFERENCES PublicSpaceType(ID),
+    UNIQUE (Settlement_ID, PublicSpaceName_ID, PublicSpaceType_ID)
+);
+
+-- Update Address table to use foreign keys instead of text fields
+CREATE TABLE IF NOT EXISTS Address_new (
+    ID TEXT PRIMARY KEY, -- xxhash64(...) based on full address components
+    Sequence INTEGER NOT NULL,
+    OriginalOrder INTEGER NOT NULL,
+    FullAddress TEXT NOT NULL,
+    PublicSpaceName_ID TEXT NOT NULL,
+    PublicSpaceType_ID TEXT NOT NULL,
+    HouseNumber TEXT NOT NULL,
+    Building TEXT,
+    Staircase TEXT,
+    PostalCode_ID TEXT NOT NULL,
+    PollingStation_ID TEXT NOT NULL,
+    SettlementIndividualElectoralDistrict_ID TEXT NOT NULL,
+    County_ID TEXT NOT NULL,
+    Settlement_ID TEXT NOT NULL,
+    NationalIndividualElectoralDistrict_ID TEXT NOT NULL,
+    FOREIGN KEY (PublicSpaceName_ID) REFERENCES PublicSpaceName(ID),
+    FOREIGN KEY (PublicSpaceType_ID) REFERENCES PublicSpaceType(ID),
+    FOREIGN KEY (PostalCode_ID) REFERENCES PostalCode(ID),
+    FOREIGN KEY (PollingStation_ID) REFERENCES PollingStation(ID),
+    FOREIGN KEY (SettlementIndividualElectoralDistrict_ID) REFERENCES SettlementIndividualElectoralDistrict(ID),
+    FOREIGN KEY (County_ID) REFERENCES County(ID),
+    FOREIGN KEY (Settlement_ID) REFERENCES Settlement(ID),
+    FOREIGN KEY (NationalIndividualElectoralDistrict_ID) REFERENCES NationalIndividualElectoralDistrict(ID)
+);
+
 -- Indexes for performance
 CREATE INDEX IF NOT EXISTS idx_County_CountyCode ON County(CountyCode);
 CREATE INDEX IF NOT EXISTS idx_Settlement_County_ID ON Settlement(County_ID);
@@ -115,3 +166,16 @@ CREATE INDEX IF NOT EXISTS idx_Address_PostalCode_ID ON Address(PostalCode_ID);
 CREATE INDEX IF NOT EXISTS idx_Address_PollingStation_ID ON Address(PollingStation_ID);
 CREATE INDEX IF NOT EXISTS idx_Address_County_ID ON Address(County_ID);
 CREATE INDEX IF NOT EXISTS idx_Address_Settlement_ID ON Address(Settlement_ID);
+
+-- New indexes for public space tables
+CREATE INDEX IF NOT EXISTS idx_PublicSpaceType_PublicSpaceType ON PublicSpaceType(PublicSpaceType);
+CREATE INDEX IF NOT EXISTS idx_PublicSpaceName_PublicSpaceName ON PublicSpaceName(PublicSpaceName);
+CREATE INDEX IF NOT EXISTS idx_SettlementPublicSpaces_Settlement_ID ON SettlementPublicSpaces(Settlement_ID);
+CREATE INDEX IF NOT EXISTS idx_SettlementPublicSpaces_PublicSpaceName_ID ON SettlementPublicSpaces(PublicSpaceName_ID);
+CREATE INDEX IF NOT EXISTS idx_SettlementPublicSpaces_PublicSpaceType_ID ON SettlementPublicSpaces(PublicSpaceType_ID);
+CREATE INDEX IF NOT EXISTS idx_Address_new_PublicSpaceName_ID ON Address_new(PublicSpaceName_ID);
+CREATE INDEX IF NOT EXISTS idx_Address_new_PublicSpaceType_ID ON Address_new(PublicSpaceType_ID);
+CREATE INDEX IF NOT EXISTS idx_Address_new_PostalCode_ID ON Address_new(PostalCode_ID);
+CREATE INDEX IF NOT EXISTS idx_Address_new_PollingStation_ID ON Address_new(PollingStation_ID);
+CREATE INDEX IF NOT EXISTS idx_Address_new_County_ID ON Address_new(County_ID);
+CREATE INDEX IF NOT EXISTS idx_Address_new_Settlement_ID ON Address_new(Settlement_ID);

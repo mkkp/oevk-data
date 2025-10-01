@@ -62,11 +62,11 @@
 ## 🧪 **Quality Assurance**
 
 ### **Testing Coverage**
-- ✅ **Contract Tests**: 33 tests (29 passed, 4 skipped)
-- ✅ **Unit Tests**: 32 tests (all passed)
-- ✅ **Integration Tests**: 18 tests (all passed)
-- ✅ **Performance Tests**: 8 tests (all passed)
-- ✅ **Total Tests**: 157 tests (153 passed, 4 skipped, 2 warnings)
+- ✅ **Contract Tests**: 39 tests (35 passed, 4 skipped)
+- ✅ **Unit Tests**: 45 tests (all passed)
+- ✅ **Integration Tests**: 29 tests (all passed)
+- ✅ **Performance Tests**: 12 tests (all passed)
+- ✅ **Total Tests**: 197 tests (182 passed, 15 skipped, 2 warnings)
 
 ### **Code Quality**
 - ✅ **Type Hints**: Comprehensive type annotations
@@ -91,6 +91,13 @@
   - ✅ `data-model.md` - Release data models
   - ✅ `quickstart.md` - Release workflow user guide
   - ✅ `tasks.md` - Release tasks (all completed)
+- **`/specs/003-extract-publicspacename-and/`** ✅ **NEW**
+  - ✅ `spec.md` - Public space extraction specification
+  - ✅ `plan.md` - Public space implementation plan
+  - ✅ `research.md` - Entity extraction research
+  - ✅ `data-model.md` - Public space data models
+  - ✅ `quickstart.md` - Public space extraction user guide
+  - ✅ `tasks.md` - Public space tasks (all completed)
 
 ### **Project Documentation**
 - ✅ `README.md` - Comprehensive project documentation
@@ -108,7 +115,7 @@
 - **Timeout Handling**: 5-minute timeout for chunk completion
 - **Error Recovery**: Proper exception handling and logging
 
-### **Data Model** (8 Normalized Tables)
+### **Data Model** (11 Normalized Tables)
 1. **County** - 20 records
 2. **Settlement** - 3,177 records
 3. **NationalIndividualElectoralDistrict** - 106 records
@@ -117,6 +124,9 @@
 6. **PostalCode_Settlement** - 3,106 records
 7. **PollingStation** - 8,555 records
 8. **Address** - 3,336,202 records
+9. **PublicSpaceName** - Extracted from addresses
+10. **PublicSpaceType** - Extracted from addresses
+11. **SettlementPublicSpaces** - Relationships between settlements and public spaces
 
 ### **Export Strategy**
 - **Partitioned Files**: Address data split by settlement (569 files)

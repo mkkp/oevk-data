@@ -1,0 +1,112 @@
+{
+  "name": "public-space-extraction-export",
+  "version": "1.0.0",
+  "description": "Contract for exporting normalized public space data to CSV files",
+  "input": {
+    "source": "transformed database with normalized public space tables",
+    "tables": ["PublicSpaceName", "PublicSpaceType", "SettlementPublicSpaces", "Address"],
+    "required_relationships": [
+      "Address.PublicSpaceName_ID → PublicSpaceName.ID",
+      "Address.PublicSpaceType_ID → PublicSpaceType.ID",
+      "SettlementPublicSpaces.Settlement_ID → Settlement.ID",
+      "SettlementPublicSpaces.PublicSpaceName_ID → PublicSpaceName.ID",
+      "SettlementPublicSpaces.PublicSpaceType_ID → PublicSpaceType.ID"
+    ]
+  },
+  "output": {
+    "target": "exports directory with CSV files",
+    "files": [
+      {
+        "name": "PublicSpaceName.csv",
+        "columns": ["ID", "PublicSpaceName"],
+        "sort_order": "PublicSpaceName ASC",
+        "expected_rows": "~50,000-100,000"
+      },
+      {
+        "name": "PublicSpaceType.csv",
+        "columns": ["ID", "PublicSpaceType"],
+        "sort_order": "PublicSpaceType ASC",
+        "expected_rows": "~100-200"
+      },
+      {
+        "name": "SettlementPublicSpaces.csv",
+        "columns": ["Settlement_ID", "PublicSpaceName_ID", "PublicSpaceType_ID"],
+        "sort_order": "Settlement_ID ASC, PublicSpaceName_ID ASC",
+        "expected_rows": "~100,000-200,000"
+      }
+    ],
+    "modified_files": [
+      {
+        "name": "addresses.csv",
+        "changes": [
+          "Replace PublicSpaceName text column with PublicSpaceName_ID foreign key",
+          "Replace PublicSpaceType text column with PublicSpaceType_ID foreign key",
+          "Apply house number formatting (remove leading zeros)"
+        ]
+      }
+    ]
+  },
+  "export_steps": [
+    {
+      "step": "export-public-space-names",
+      "description": "Export PublicSpaceName table to CSV",
+      "query": "SELECT ID, PublicSpaceName FROM PublicSpaceName ORDER BY PublicSpaceName ASC",
+      "validation": {
+        "file_exists": true,
+        "row_count_matches": true,
+        "headers_correct": ["ID", "PublicSpaceName"]
+      }
+    },
+    {
+      "step": "export-public-space-types",
+      "description": "Export PublicSpaceType table to CSV",
+      "query": "SELECT ID, PublicSpaceType FROM PublicSpaceType ORDER BY PublicSpaceType ASC",
+      "validation": {
+        "file_exists": true,
+        "row_count_matches": true,
+        "headers_correct": ["ID", "PublicSpaceType"]
+      }
+    },
+    {
+      "step": "export-settlement-lookup",
+      "description": "Export SettlementPublicSpaces lookup table to CSV",
+      "query": "SELECT Settlement_ID, PublicSpaceName_ID, PublicSpaceType_ID FROM SettlementPublicSpaces ORDER BY Settlement_ID ASC, PublicSpaceName_ID ASC",
+      "validation": {
+        "file_exists": true,
+        "row_count_matches": true,
+        "headers_correct": ["Settlement_ID", "PublicSpaceName_ID", "PublicSpaceType_ID"]
+      }
+    },
+    {
+      "step": "export-updated-addresses",
+      "description": "Export updated Address table with foreign keys",
+      "query": "SELECT ID, Settlement_ID, PublicSpaceName_ID, PublicSpaceType_ID, HouseNumber, Building, Staircase, Floor, Door, PostalCode_ID, PollingStation_ID FROM Address ORDER BY Settlement_ID ASC, PublicSpaceName_ID ASC, HouseNumber ASC",
+      "validation": {
+        "file_exists": true,
+        "row_count_matches": true,
+        "headers_correct": ["ID", "Settlement_ID", "PublicSpaceName_ID", "PublicSpaceType_ID", "HouseNumber", "Building", "Staircase", "Floor", "Door", "PostalCode_ID", "PollingStation_ID"],
+        "no_public_space_text_columns": true
+      }
+    }
+  ],
+  "data_quality_requirements": {
+    "referential_integrity": "All foreign keys in exported data must reference existing entities",
+    "completeness": "No data loss during export",
+    "consistency": "All CSV files must use UTF-8 encoding",
+    "formatting": "House numbers must be formatted (leading zeros removed)"
+  },
+  "performance_requirements": {
+    "export_time": "≤5 minutes for all files",
+    "file_sizes": {
+      "PublicSpaceName.csv": "~2-5MB",
+      "PublicSpaceType.csv": "~10-50KB",
+      "SettlementPublicSpaces.csv": "~5-10MB",
+      "addresses.csv": "~200-300MB"
+    }
+  },
+  "integration_requirements": {
+    "compatibility": "Must work with existing release workflow",
+    "backward_compatibility": "Address CSV must maintain same structure except for public space columns",
+    "validation": "Must pass existing data validation checks"
+  }
+}

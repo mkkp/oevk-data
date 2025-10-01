@@ -32,6 +32,9 @@ def export_tables_to_csv(
         "PostalCode",
         "PostalCode_Settlement",
         "PollingStation",
+        "PublicSpaceName",
+        "PublicSpaceType",
+        "SettlementPublicSpaces",
     ]
 
     for table in tables:
@@ -143,6 +146,34 @@ def export_addresses_partitioned(
     logger.info("Address export completed")
 
 
+def export_public_space_tables(
+    db_connection: duckdb.DuckDBPyConnection, export_dir: str, run_tag: str
+) -> None:
+    """Exports public space tables to CSV files.
+
+    Args:
+        db_connection: An active DuckDB connection.
+        export_dir: The directory to save CSV files.
+        run_tag: The run tag to include in filenames.
+    """
+    logger.info(f"Exporting public space tables to CSV in {export_dir}")
+
+    # Create export directory if it doesn't exist
+    os.makedirs(export_dir, exist_ok=True)
+
+    # List of public space tables to export
+    tables = [
+        "PublicSpaceName",
+        "PublicSpaceType",
+        "SettlementPublicSpaces",
+    ]
+
+    for table in tables:
+        export_table_to_csv(db_connection, table, export_dir, run_tag)
+
+    logger.info("Public space table export completed")
+
+
 def create_release_symlinks(export_dir: str, run_tag: str, db_path: str) -> None:
     """Create symlinks for release system compatibility.
 
@@ -161,6 +192,9 @@ def create_release_symlinks(export_dir: str, run_tag: str, db_path: str) -> None
         "addresses.csv": f"{run_tag}_Address.csv",
         "settlements.csv": f"{run_tag}_Settlement.csv",
         "counties.csv": f"{run_tag}_County.csv",
+        "PublicSpaceName.csv": f"{run_tag}_PublicSpaceName.csv",
+        "PublicSpaceType.csv": f"{run_tag}_PublicSpaceType.csv",
+        "SettlementPublicSpaces.csv": f"{run_tag}_SettlementPublicSpaces.csv",
         "database.duckdb": db_path,
     }
 
