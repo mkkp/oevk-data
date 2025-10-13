@@ -16,11 +16,11 @@ class ReleaseUtils:
 
     @staticmethod
     def get_required_files() -> List[str]:
-        """Get list of required files for release validation."""
+        """Get list of required files/directories for release validation."""
         return [
-            "addresses.csv",
-            "settlements.csv",
-            "counties.csv",
+            "Addresses",  # Directory containing per-settlement CSVs
+            "Settlements.csv",
+            "Counties.csv",
             "database.duckdb",
             "PublicSpaceName.csv",
             "PublicSpaceType.csv",
@@ -31,9 +31,9 @@ class ReleaseUtils:
     def get_csv_files() -> List[str]:
         """Get list of CSV files for packaging."""
         return [
-            "addresses.csv",
-            "settlements.csv",
-            "counties.csv",
+            "Addresses",  # Directory containing per-settlement CSV files
+            "Settlements.csv",
+            "Counties.csv",
             "NationalIndividualElectoralDistrict.csv",
             "PollingStation.csv",
             "PostalCode.csv",
@@ -54,9 +54,9 @@ class ReleaseUtils:
     def get_file_size_limits() -> Dict[str, int]:
         """Get minimum file size limits for validation."""
         return {
-            "addresses.csv": 1000,  # 1KB minimum
-            "settlements.csv": 100,  # 100B minimum
-            "counties.csv": 50,  # 50B minimum
+            "Addresses": 1000,  # Directory - 1KB minimum total
+            "Settlements.csv": 100,  # 100B minimum
+            "Counties.csv": 50,  # 50B minimum
             "database.duckdb": 1000,  # 1KB minimum
             "PublicSpaceName.csv": 50,  # 50B minimum
             "PublicSpaceType.csv": 50,  # 50B minimum

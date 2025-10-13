@@ -1,3 +1,22 @@
+<!-- OPENSPEC:START -->
+# OpenSpec Instructions
+
+These instructions are for AI assistants working in this project.
+
+Always open `@/openspec/AGENTS.md` when the request:
+- Mentions planning or proposals (words like proposal, spec, change, plan)
+- Introduces new capabilities, breaking changes, architecture shifts, or big performance/security work
+- Sounds ambiguous and you need the authoritative spec before coding
+
+Use `@/openspec/AGENTS.md` to learn:
+- How to create and apply change proposals
+- Spec format and conventions
+- Project structure and guidelines
+
+Keep this managed block so 'openspec update' can refresh the instructions.
+
+<!-- OPENSPEC:END -->
+
 # AGENTS.md - OEVK Data Processing Project
 
 ## Build/Lint/Test Commands
@@ -6,6 +25,7 @@
 - **Lint**: `ruff check .`
 - **Type check**: `mypy .`
 - **Release workflow**: `python -m src.cli release create --auto`
+- **Deduplication tests**: `python -m pytest tests/contract/test_deduplication.py tests/integration/test_deduplication_*.py tests/unit/test_deduplication_*.py -v`
 
 ## Release Workflow Commands
 
@@ -25,6 +45,23 @@
 ### Release Management
 - **Check release status**: `python -m src.cli release status --repo-owner owner --repo-name repo --tag 20250101-1200`
 - **List recent releases**: `python -m src.cli release history --repo-owner owner --repo-name repo --limit 10`
+
+## Deduplication Commands
+
+### Basic Deduplication
+- **Run deduplication with report**: `python -c "from src.etl.deduplicate import AddressDeduplicator; dedup = AddressDeduplicator(); result = dedup.deduplicate_addresses(addresses_df)"`
+- **Run deduplication without report**: `python -c "from src.etl.deduplicate import AddressDeduplicator; dedup = AddressDeduplicator(); result = dedup.deduplicate_addresses(addresses_df, generate_report=False)"`
+- **Process large datasets**: `python -c "from src.etl.deduplicate import deduplicate_large_dataset; result = deduplicate_large_dataset(addresses_df, chunk_size=100000)"`
+
+### Report Generation
+- **Generate deduplication report**: `python -c "from src.etl.deduplicate import AddressDeduplicator; dedup = AddressDeduplicator(); report = dedup.generate_deduplication_report(addresses_df, result, processing_time_ms)"`
+- **Export report to JSON**: `python -c "from src.etl.deduplicate import AddressDeduplicator; dedup = AddressDeduplicator(); json_report = dedup.export_report_to_json(report)"`
+
+### Testing
+- **Run deduplication tests**: `python -m pytest tests/contract/test_deduplication.py -v`
+- **Run integration tests**: `python -m pytest tests/integration/test_deduplication_*.py -v`
+- **Run unit tests**: `python -m pytest tests/unit/test_deduplication_*.py -v`
+- **Run all deduplication tests**: `python -m pytest tests/contract/test_deduplication.py tests/integration/test_deduplication_*.py tests/unit/test_deduplication_*.py -v`
 
 ### Environment Variables
 - **GitHub Token**: `GITHUB_TOKEN` (required for release operations)
@@ -48,10 +85,25 @@ The OEVK data processing pipeline includes the following stages:
 - **Data Integrity**: Full validation and referential integrity
 - **Export Support**: CSV export for all public space entities
 
+### Address Deduplication Features
+- **Duplicate Identification**: Identifies duplicate addresses using deterministic hash IDs
+- **Canonical Address Creation**: Creates unique canonical address records
+- **Relationship Preservation**: Maintains all original relationships (polling stations, PIR codes)
+- **Report Generation**: Generates comprehensive deduplication reports with statistics
+- **JSON Export**: Exports deduplication reports to JSON format for external analysis
+- **Large Dataset Support**: Processes large datasets in chunks for optimal performance
+
 ### Public Space Tables
 1. **PublicSpaceName**: Unique public space names extracted from addresses
 2. **PublicSpaceType**: Unique public space types (utca, tér, etc.)
 3. **SettlementPublicSpaces**: Many-to-many relationships between settlements and public spaces
+
+### Deduplication Tables
+1. **CanonicalAddresses**: Unique canonical address records after deduplication
+2. **AddressMapping**: Mapping between original addresses and canonical addresses
+3. **AddressPollingStations**: Preserved polling station assignments
+4. **AddressPIRCodes**: Preserved PIR code relationships
+5. **DeduplicationReport**: Audit reports with deduplication statistics
 
 ## Code Style Guidelines
 
@@ -134,7 +186,61 @@ The OEVK data processing pipeline includes the following stages:
 - **Data Validation**: ≤2 minutes for comprehensive checks
 - **Package Creation**: ≤5 minutes for artifact compression
 - **GitHub Integration**: ≤3 minutes for release creation
+- **CSV Export**: ~2.6 minutes for 3.3M addresses (single-query optimization)
 - **Idempotent Operations**: Safe to retry failed operations
+
+### CSV Export Optimization
+
+The project uses an optimized single-query approach for exporting canonical addresses:
+
+#### Export Performance
+- **Approach**: Single database query + Python partitioning
+- **Performance**: ~2.6 minutes for 3.3M addresses across 3,177 settlements
+- **Speed**: ~21,000 addresses/second
+- **Improvement**: ~17x faster than per-settlement query approach
+- **Query Time**: ~24 seconds to fetch all addresses with JOINs
+- **Write Time**: ~2.2 minutes to write 3,177 CSV files
+
+#### Export Features
+- **Automatic Cleanup**: Removes old export files before new export
+- **Incremental Progress**: Logs progress every 500 settlements
+- **Memory Efficient**: Streaming write approach
+- **Symlink Management**: Creates symlinks for release validation
+- **Default Directory**: `exports/` (aligned with release workflow)
+
+#### Export Commands
+```bash
+# Basic export to default directory (exports/)
+python -m src.cli export --db-path data/oevk.db
+
+# Export with custom output directory
+python -m src.cli export --db-path data/oevk.db --output-dir /path/to/output
+
+# Export with custom run tag
+python -m src.cli export --run-tag "v1.0.0"
+
+# Export only entity tables (skip addresses)
+python -m src.cli export --tables-only
+
+# Export only addresses (skip entity tables)
+python -m src.cli export --addresses-only
+```
+
+#### Export Structure
+```
+exports/
+├── {run_tag}_Address/              # 3,177 settlement CSV files
+│   ├── Address_001_Aba.csv
+│   ├── Address_002_Abádszalók.csv
+│   └── ...
+├── {run_tag}_County.csv            # Entity tables
+├── {run_tag}_Settlement.csv
+├── ... (8 more entity tables)
+├── addresses -> {run_tag}_Address  # Symlinks for release
+├── settlements.csv -> {run_tag}_Settlement.csv
+├── counties.csv -> {run_tag}_County.csv
+└── database.duckdb -> ../data/oevk.db
+```
 
 ## Release Workflow Usage Examples
 

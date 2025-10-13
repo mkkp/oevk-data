@@ -177,14 +177,14 @@ def hash_settlement_public_spaces_id(
 
 
 def hash_address_id(
-    county_code: str,
-    settlement_code: str,
-    public_space_name: str,
-    public_space_type: str,
-    house_number: str,
-    building: str,
-    staircase: str,
-    postal_code: str,
+    county_code: str | None,
+    settlement_code: str | None,
+    public_space_name: str | None,
+    public_space_type: str | None,
+    house_number: str | None,
+    building: str | None,
+    staircase: str | None,
+    postal_code: str | None,
 ) -> str:
     """Generate hash ID for Address entity.
 
@@ -216,4 +216,90 @@ def hash_address_id(
         f"{house_number}|{building}|{staircase}|{postal_code}"
     ).encode("utf-8")
 
+    return xxhash.xxh64(data).hexdigest()
+
+
+def hash_canonical_address_id(
+    county_code: str | None,
+    settlement_name: str | None,
+    street_name: str | None,
+    house_number: str | None,
+) -> str:
+    """Generate hash ID for CanonicalAddress entity.
+
+    Args:
+        county_code: The unique county code
+        settlement_name: The settlement name
+        street_name: The street name
+        house_number: The house number
+
+    Returns:
+        Hexadecimal string representation of xxhash64 digest
+    """
+    # Handle None values
+    county_code = county_code if county_code is not None else ""
+    settlement_name = settlement_name if settlement_name is not None else ""
+    street_name = street_name if street_name is not None else ""
+    house_number = house_number if house_number is not None else ""
+
+    data = f"{county_code}|{settlement_name}|{street_name}|{house_number}".encode(
+        "utf-8"
+    )
+    return xxhash.xxh64(data).hexdigest()
+
+
+def hash_address_mapping_id(original_address_id: str, canonical_address_id: str) -> str:
+    """Generate hash ID for AddressMapping entity.
+
+    Args:
+        original_address_id: The hash ID of the original address
+        canonical_address_id: The hash ID of the canonical address
+
+    Returns:
+        Hexadecimal string representation of xxhash64 digest
+    """
+    data = f"{original_address_id}|{canonical_address_id}".encode("utf-8")
+    return xxhash.xxh64(data).hexdigest()
+
+
+def hash_address_polling_stations_id(
+    canonical_address_id: str, polling_station_id: str
+) -> str:
+    """Generate hash ID for AddressPollingStations entity.
+
+    Args:
+        canonical_address_id: The hash ID of the canonical address
+        polling_station_id: The hash ID of the polling station
+
+    Returns:
+        Hexadecimal string representation of xxhash64 digest
+    """
+    data = f"{canonical_address_id}|{polling_station_id}".encode("utf-8")
+    return xxhash.xxh64(data).hexdigest()
+
+
+def hash_address_pir_codes_id(canonical_address_id: str, pir_code: str) -> str:
+    """Generate hash ID for AddressPIRCodes entity.
+
+    Args:
+        canonical_address_id: The hash ID of the canonical address
+        pir_code: The PIR code
+
+    Returns:
+        Hexadecimal string representation of xxhash64 digest
+    """
+    data = f"{canonical_address_id}|{pir_code}".encode("utf-8")
+    return xxhash.xxh64(data).hexdigest()
+
+
+def hash_deduplication_report_id(run_id: str) -> str:
+    """Generate hash ID for DeduplicationReport entity.
+
+    Args:
+        run_id: The unique run identifier
+
+    Returns:
+        Hexadecimal string representation of xxhash64 digest
+    """
+    data = run_id.encode("utf-8")
     return xxhash.xxh64(data).hexdigest()

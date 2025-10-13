@@ -56,14 +56,19 @@ class DataValidator:
         all_passed = all(check.status == "passed" for check in checks)
 
         passed_count = sum(1 for check in checks if check.status == "passed")
-        failed_count = len(checks) - passed_count
-
-        self.logger.log_completion(
-            "comprehensive data validation",
-            0,
-            passed_checks=passed_count,
-            failed_checks=failed_count,
+        failed_count = sum(1 for check in checks if check.status == "failed")
+        warning_count = sum(
+            1 for check in checks if check.status not in ["passed", "failed"]
         )
+
+        # Only log failed_checks if there are actual failures
+        log_params = {"passed_checks": passed_count}
+        if failed_count > 0:
+            log_params["failed_checks"] = failed_count
+        if warning_count > 0:
+            log_params["warning_checks"] = warning_count
+
+        self.logger.log_completion("comprehensive data validation", 0, **log_params)
 
         return ValidationSummary(valid=all_passed, checks=checks)
 
@@ -122,6 +127,9 @@ class DataValidator:
             for file_name in csv_files:
                 file_path = self.data_dir / file_name
                 if file_path.exists():
+                    # Skip directories (like Addresses)
+                    if file_path.is_dir():
+                        continue
                     # Try to read first line to verify file is readable
                     with open(file_path, "r", encoding="utf-8") as f:
                         first_line = f.readline()
@@ -155,6 +163,9 @@ class DataValidator:
             for file_name in csv_files:
                 file_path = self.data_dir / file_name
                 if file_path.exists():
+                    # Skip directories (like Addresses)
+                    if file_path.is_dir():
+                        continue
                     with open(file_path, "r", encoding="utf-8") as f:
                         header = f.readline().strip()
                         if not header:

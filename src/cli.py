@@ -3,8 +3,12 @@
 import argparse
 import datetime
 import os
+import re
+import subprocess
 import sys
 import time
+import glob
+import shutil
 from pathlib import Path
 
 # Add project root to Python path for imports
@@ -18,14 +22,17 @@ sys.path.insert(0, str(project_root / "src"))
 sys.path.insert(0, str(Path(__file__).parent))
 
 
-from database.connection import get_database_connection
-from etl.export import (
+from src.database.connection import get_database_connection
+from src.etl.export import (
     create_release_symlinks,
     export_addresses_partitioned,
     export_tables_to_csv,
 )
-from etl.ingest import download_sources, load_staging_data
-from etl.transform_optimized import transform_all_optimized
+from src.etl.export_canonical_v2 import export_canonical_addresses_with_uuid
+from src.etl.export_canonical_v3 import export_canonical_addresses_optimized
+from src.etl.ingest import download_sources, load_staging_data
+from src.etl.transform_optimized import transform_all_optimized
+from src.utils.config import Config
 from src.utils.pipeline_logging import PipelineMetrics, get_logger, setup_logging
 
 # Release workflow import (conditional to avoid import errors during development)
@@ -39,6 +46,98 @@ except ImportError:
 logger = get_logger(__name__)
 
 
+def get_git_repo_info():
+    """
+    Extract GitHub repository owner and name from git remote URL.
+
+    Returns:
+        tuple: (owner, repo_name) or (None, None) if not found
+    """
+    try:
+        result = subprocess.run(
+            ["git", "config", "--get", "remote.origin.url"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        remote_url = result.stdout.strip()
+
+        # Parse GitHub URL patterns:
+        # - git@github.com:owner/repo.git
+        # - https://github.com/owner/repo.git
+        # - https://github.com/owner/repo
+
+        # SSH format: git@github.com:owner/repo.git
+        ssh_match = re.match(r"git@github\.com:([^/]+)/(.+?)(?:\.git)?$", remote_url)
+        if ssh_match:
+            return ssh_match.group(1), ssh_match.group(2)
+
+        # HTTPS format: https://github.com/owner/repo.git or https://github.com/owner/repo
+        https_match = re.match(
+            r"https://github\.com/([^/]+)/(.+?)(?:\.git)?$", remote_url
+        )
+        if https_match:
+            return https_match.group(1), https_match.group(2)
+
+        logger.warning(f"Could not parse GitHub URL: {remote_url}")
+        return None, None
+    except subprocess.CalledProcessError:
+        logger.warning("Could not get git remote URL")
+        return None, None
+    except Exception as e:
+        logger.warning(f"Error getting git repo info: {e}")
+        return None, None
+
+
+def get_latest_export_timestamp(exports_dir="exports"):
+    """
+    Find the latest export timestamp from the exports directory.
+
+    Args:
+        exports_dir: Path to exports directory
+
+    Returns:
+        str: Latest timestamp (YYYYMMDD_HHMMSS) or None if not found
+    """
+    try:
+        # Look for timestamped CSV files: YYYYMMDD_HHMMSS_*.csv
+        csv_files = glob.glob(os.path.join(exports_dir, "*_*.csv"))
+
+        # Also look for timestamped Address directories: YYYYMMDD_HHMMSS_Address
+        address_dirs = glob.glob(os.path.join(exports_dir, "*_Address"))
+
+        timestamps = set()
+
+        # Extract timestamps from CSV files
+        for csv_file in csv_files:
+            basename = os.path.basename(csv_file)
+            # Match YYYYMMDD_HHMMSS pattern
+            match = re.match(r"(\d{8}_\d{6})_", basename)
+            if match:
+                timestamps.add(match.group(1))
+
+        # Extract timestamps from Address directories
+        for addr_dir in address_dirs:
+            basename = os.path.basename(addr_dir)
+            # Match YYYYMMDD_HHMMSS_Address pattern
+            match = re.match(r"(\d{8}_\d{6})_Address$", basename)
+            if match:
+                timestamps.add(match.group(1))
+
+        if not timestamps:
+            logger.warning(f"No export timestamps found in {exports_dir}")
+            return None
+
+        # Return the latest timestamp (lexicographically sorted, which works for YYYYMMDD_HHMMSS)
+        latest = max(timestamps)
+        logger.info(f"Found latest export timestamp: {latest}")
+        return latest
+
+    except Exception as e:
+        logger.warning(f"Error finding latest export timestamp: {e}")
+        return None
+
+
 def main():
     """Main entry point for the CLI."""
     parser = argparse.ArgumentParser(
@@ -46,7 +145,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Run complete pipeline with default settings
+  # Run complete pipeline with default settings (cleans database before ingestion)
   python src/cli.py run
 
   # Run pipeline with custom database and output directory
@@ -54,6 +153,12 @@ Examples:
 
   # Run only specific stages
   python src/cli.py run --stages ingest,transform
+
+  # Preserve existing database (skip cleanup before ingestion)
+  python src/cli.py run --no-cleanup
+
+  # Disable deduplication
+  python src/cli.py run --no-deduplication
         """,
     )
 
@@ -106,10 +211,108 @@ Examples:
         action="store_true",
         help="Use original transformation instead of optimized (default: optimized enabled)",
     )
+    run_parser.add_argument(
+        "--no-deduplication",
+        action="store_true",
+        help="Disable address deduplication (default: deduplication enabled)",
+    )
+    run_parser.add_argument(
+        "--export-original-addresses",
+        action="store_true",
+        help="Export OriginalAddress CSV files (default: only canonical addresses exported)",
+    )
+    run_parser.add_argument(
+        "--no-cleanup",
+        action="store_true",
+        help="Skip database cleanup before ingestion (default: cleanup enabled)",
+    )
+
+    # Export command
+    export_parser = subparsers.add_parser("export", help="Export data to CSV files")
+    export_parser.add_argument(
+        "--db-path",
+        default="data/oevk.db",
+        help="Path to the database file (default: data/oevk.db)",
+    )
+    export_parser.add_argument(
+        "--output-dir",
+        default="exports",
+        help="Output directory for CSV files (default: exports)",
+    )
+    export_parser.add_argument("--run-tag", help="Custom run tag (default: timestamp)")
+    export_parser.add_argument(
+        "--export-original-addresses",
+        action="store_true",
+        help="Export OriginalAddress CSV files (default: only canonical addresses exported)",
+    )
+    export_parser.add_argument(
+        "--max-workers",
+        type=int,
+        default=8,
+        help="Maximum number of parallel workers for export (default: 8)",
+    )
+    export_parser.add_argument(
+        "--tables-only",
+        action="store_true",
+        help="Export only entity tables, skip address exports (default: export all)",
+    )
+    export_parser.add_argument(
+        "--addresses-only",
+        action="store_true",
+        help="Export only addresses, skip entity tables (default: export all)",
+    )
+    export_parser.add_argument(
+        "--use-copies",
+        action="store_true",
+        help="Copy files instead of creating symlinks (Windows-compatible, auto-detected by default)",
+    )
+    export_parser.add_argument(
+        "--use-symlinks",
+        action="store_true",
+        help="Create symlinks instead of copying files (Unix-only, auto-detected by default)",
+    )
 
     # Release commands (if available)
     if RELEASE_AVAILABLE:
-        release_parser = subparsers.add_parser("release", help="Manage data releases")
+        release_parser = subparsers.add_parser(
+            "release",
+            help="Manage data releases (defaults to creating release with auto-detected repo and latest export)",
+        )
+
+        # Add optional flags that apply to default behavior
+        release_parser.add_argument(
+            "--staging-dir",
+            default="data/staging",
+            help="Staging directory (default: data/staging)",
+        )
+        release_parser.add_argument(
+            "--exports-dir",
+            default="exports",
+            help="Exports directory (default: exports)",
+        )
+        release_parser.add_argument(
+            "--github-token", help="GitHub token (default: GITHUB_TOKEN env var)"
+        )
+        release_parser.add_argument(
+            "--draft", action="store_true", help="Create as draft release"
+        )
+        release_parser.add_argument(
+            "--prerelease", action="store_true", help="Create as prerelease"
+        )
+        release_parser.add_argument(
+            "--force", action="store_true", help="Force overwrite existing release"
+        )
+        release_parser.add_argument(
+            "--force-rebuild",
+            action="store_true",
+            help="Force rebuild ZIP files even if they exist (default: skip if exists)",
+        )
+        release_parser.add_argument(
+            "--skip-upload",
+            action="store_true",
+            help="Skip GitHub upload (create packages only)",
+        )
+
         release_subparsers = release_parser.add_subparsers(
             dest="release_command", help="Release command"
         )
@@ -168,6 +371,11 @@ Examples:
             "--force", action="store_true", help="Force overwrite existing release"
         )
         create_parser.add_argument(
+            "--force-rebuild",
+            action="store_true",
+            help="Force rebuild ZIP files even if they exist (default: skip if exists)",
+        )
+        create_parser.add_argument(
             "--skip-upload",
             action="store_true",
             help="Skip GitHub upload (create packages only)",
@@ -186,6 +394,30 @@ Examples:
         )
         status_parser.add_argument(
             "--github-token", help="GitHub token (default: GITHUB_TOKEN env var)"
+        )
+
+        # Release export command
+        release_export_parser = release_subparsers.add_parser(
+            "export", help="Export data for release"
+        )
+        release_export_parser.add_argument(
+            "--db-path",
+            default="data/oevk.db",
+            help="Path to the database file (default: data/oevk.db)",
+        )
+        release_export_parser.add_argument(
+            "--output-dir",
+            default="exports",
+            help="Output directory for CSV files (default: exports)",
+        )
+        release_export_parser.add_argument(
+            "--run-tag", help="Custom run tag (default: timestamp)"
+        )
+        release_export_parser.add_argument(
+            "--max-workers",
+            type=int,
+            default=8,
+            help="Maximum number of parallel workers for export (default: 8)",
         )
 
         # Release history command
@@ -216,6 +448,8 @@ Examples:
 
     if args.command == "run":
         run_pipeline(args)
+    elif args.command == "export":
+        export_data(args)
     elif args.command == "release" and RELEASE_AVAILABLE:
         handle_release_command(args)
     else:
@@ -223,9 +457,120 @@ Examples:
         sys.exit(1)
 
 
+def export_data(args):
+    """Export data to CSV files."""
+    logger.info("Starting data export")
+
+    # Initialize configuration
+    config = Config()
+
+    # Generate run tag
+    run_tag = args.run_tag or datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    logger.info(f"Run tag: {run_tag}")
+
+    # Create output directory
+    os.makedirs(args.output_dir, exist_ok=True)
+
+    # Clean up old export files before starting new export
+    logger.info("Cleaning up old export files...")
+    old_files_removed = 0
+
+    # Remove old Address directories
+    for old_dir in glob.glob(os.path.join(args.output_dir, "*_Address")):
+        if os.path.isdir(old_dir):
+            shutil.rmtree(old_dir)
+            old_files_removed += 1
+            logger.info(f"Removed old directory: {os.path.basename(old_dir)}")
+
+    # Remove old timestamped CSV files (but not symlinks)
+    for old_file in glob.glob(os.path.join(args.output_dir, "*_*.csv")):
+        if os.path.isfile(old_file) and not os.path.islink(old_file):
+            os.remove(old_file)
+            old_files_removed += 1
+            logger.debug(f"Removed old file: {os.path.basename(old_file)}")
+
+    if old_files_removed > 0:
+        logger.info(f"Cleaned up {old_files_removed} old export files/directories")
+    else:
+        logger.info("No old export files found to clean up")
+
+    # Check if database exists
+    if not os.path.exists(args.db_path):
+        logger.error(f"Database not found at {args.db_path}")
+        logger.error("Please run the pipeline first: python src/cli.py run")
+        return
+
+    try:
+        # Get database connection
+        logger.info(f"Connecting to database: {args.db_path}")
+        conn = get_database_connection(args.db_path)
+
+        # Determine what to export
+        export_tables = not args.addresses_only
+        export_addresses = not args.tables_only
+
+        if args.tables_only and args.addresses_only:
+            logger.warning(
+                "Both --tables-only and --addresses-only specified, exporting all"
+            )
+            export_tables = True
+            export_addresses = True
+
+        # Export entity tables
+        if export_tables:
+            logger.info("=== EXPORTING ENTITY TABLES ===")
+            export_tables_to_csv(conn, args.output_dir, run_tag)
+            logger.info("Entity tables export completed")
+
+        # Export addresses
+        if export_addresses:
+            logger.info("=== EXPORTING ADDRESSES ===")
+
+            # Get max_workers from args or config
+            max_workers = getattr(args, "max_workers", None) or config.get(
+                "export.max_workers", 8
+            )
+
+            # Export canonical (deduplicated) addresses with UUID v3 (optimized)
+            logger.info("Exporting canonical addresses (optimized single-query)")
+            export_canonical_addresses_optimized(conn, args.output_dir, run_tag)
+
+            # Optionally export all original addresses (for debugging/analysis)
+            if args.export_original_addresses:
+                logger.info(
+                    "Exporting original addresses (--export-original-addresses enabled)"
+                )
+                export_addresses_partitioned(conn, args.output_dir, run_tag)
+            else:
+                logger.info(
+                    "Skipping original address export (use --export-original-addresses to enable)"
+                )
+
+        # Create release symlinks/copies for validation compatibility
+        # Determine method: explicit flag overrides auto-detection
+        use_copies = None
+        if hasattr(args, "use_copies") and args.use_copies:
+            use_copies = True
+        elif hasattr(args, "use_symlinks") and args.use_symlinks:
+            use_copies = False
+        create_release_symlinks(
+            args.output_dir, run_tag, args.db_path, use_copies=use_copies
+        )
+
+        conn.close()
+        logger.info("✓ Export completed successfully")
+
+    except Exception as e:
+        logger.error(f"Export failed: {e}", exc_info=True)
+        raise
+
+
 def run_pipeline(args):
     """Run the complete data processing pipeline."""
     logger.info("Starting OEVK data processing pipeline")
+
+    # Initialize configuration
+    config = Config()
 
     # Initialize performance metrics
     metrics = PipelineMetrics("oevk_pipeline")
@@ -243,9 +588,6 @@ def run_pipeline(args):
         exist_ok=True,
     )
 
-    # Get database connection
-    conn = get_database_connection(args.db_path)
-
     # Define source URLs
     sources = {
         "oevk_json": "https://static.valasztas.hu/dyn/oevk_data/oevk.json",
@@ -255,10 +597,28 @@ def run_pipeline(args):
     # Determine which stages to run
     stages = [stage.strip() for stage in args.stages.split(",")]
 
+    # Clean up old database BEFORE creating connection (if ingestion stage is included)
+    if "ingest" in stages:
+        logger.info("=== DATABASE CLEANUP ===")
+        if not (hasattr(args, "no_cleanup") and args.no_cleanup):
+            if os.path.exists(args.db_path):
+                logger.info(f"Removing existing database: {args.db_path}")
+                os.remove(args.db_path)
+                logger.info("Database removed successfully - starting with clean slate")
+            else:
+                logger.info("No existing database found - starting fresh")
+        else:
+            logger.info("Database cleanup skipped (--no-cleanup flag set)")
+            logger.info("Existing data will be preserved")
+
+    # Get database connection (after cleanup)
+    conn = get_database_connection(args.db_path)
+
     try:
         # Run ingestion stage
         if "ingest" in stages:
             logger.info("=== INGESTION STAGE ===")
+
             metrics.log_step_start("ingest")
             file_paths = download_sources(sources, args.staging_dir)
 
@@ -307,13 +667,26 @@ def run_pipeline(args):
 
                 transform_all(conn, run_tag)
             else:
-                transform_all_optimized(
+                enable_dedup = not (
+                    hasattr(args, "no_deduplication") and args.no_deduplication
+                )
+                dedup_result = transform_all_optimized(
                     conn,
                     run_tag,
                     chunk_size=args.chunk_size,
                     parallel=not args.no_parallel,
                     db_path=args.db_path,
+                    enable_deduplication=enable_dedup,
                 )
+
+                # Log deduplication results if available
+                if dedup_result and "deduplication_report" in dedup_result:
+                    report = dedup_result["deduplication_report"]
+                    logger.info(
+                        f"Deduplication: {report.total_addresses:,} addresses → "
+                        f"{report.canonical_addresses_created:,} canonical "
+                        f"({report.duplicates_found:,} duplicates merged)"
+                    )
 
             # Run public space extraction after main transformation
             logger.info("=== PUBLIC SPACE EXTRACTION ===")
@@ -344,10 +717,32 @@ def run_pipeline(args):
             ]
 
             export_tables_to_csv(conn, args.output_dir, run_tag)
-            export_addresses_partitioned(conn, args.output_dir, run_tag)
 
-            # Create release symlinks for validation compatibility
-            create_release_symlinks(args.output_dir, run_tag, args.db_path)
+            # Export canonical (deduplicated) addresses with UUID v3 (optimized)
+            logger.info("Exporting canonical addresses (optimized single-query)")
+            export_canonical_addresses_optimized(conn, args.output_dir, run_tag)
+
+            # Optionally export all original addresses (for debugging/analysis)
+            if args.export_original_addresses:
+                logger.info(
+                    "Exporting original addresses (--export-original-addresses enabled)"
+                )
+                export_addresses_partitioned(conn, args.output_dir, run_tag)
+            else:
+                logger.info(
+                    "Skipping original address export (use --export-original-addresses to enable)"
+                )
+
+            # Create release symlinks/copies for validation compatibility
+            # Determine method: explicit flag overrides auto-detection
+            use_copies = None
+            if hasattr(args, "use_copies") and args.use_copies:
+                use_copies = True
+            elif hasattr(args, "use_symlinks") and args.use_symlinks:
+                use_copies = False
+            create_release_symlinks(
+                args.output_dir, run_tag, args.db_path, use_copies=use_copies
+            )
 
             metrics.log_step_completion("export", row_count=total_rows)
 
@@ -389,7 +784,74 @@ def handle_release_command(args):
         sys.exit(1)
 
     try:
-        if args.release_command == "validate":
+        # If no subcommand provided, default to create with smart defaults
+        if args.release_command is None:
+            logger.info(
+                "No release subcommand specified, defaulting to 'create' with auto-detection"
+            )
+
+            # Auto-detect git repository
+            repo_owner, repo_name = get_git_repo_info()
+            if not repo_owner or not repo_name:
+                print(
+                    "❌ Error: Could not auto-detect GitHub repository from git remote"
+                )
+                print(
+                    "Please ensure you're in a git repository with a GitHub remote configured"
+                )
+                print(
+                    "Or use: python src/cli.py release create --repo-owner <owner> --repo-name <name>"
+                )
+                sys.exit(1)
+
+            logger.info(f"Detected repository: {repo_owner}/{repo_name}")
+
+            # Find latest export timestamp
+            exports_dir = getattr(args, "exports_dir", "exports")
+            timestamp = get_latest_export_timestamp(exports_dir)
+            if not timestamp:
+                print(f"❌ Error: No export files found in {exports_dir}")
+                print(
+                    "Please run 'python src/cli.py export' first to generate export files"
+                )
+                sys.exit(1)
+
+            # Use timestamp as tag (format: v20251013_195208)
+            tag = f"v{timestamp}"
+            logger.info(f"Using tag from latest export: {tag}")
+
+            # Create release with detected values
+            workflow = ReleaseWorkflow(
+                repo_owner=repo_owner,
+                repo_name=repo_name,
+                github_token=getattr(args, "github_token", None),
+                staging_dir=getattr(args, "staging_dir", "data/staging"),
+                exports_dir=exports_dir,
+            )
+
+            result = workflow.execute_full_release(
+                tag=tag,
+                draft=getattr(args, "draft", False),
+                prerelease=getattr(args, "prerelease", False),
+                force=getattr(args, "force", False),
+                force_rebuild=getattr(args, "force_rebuild", False),
+                skip_upload=getattr(args, "skip_upload", False),
+            )
+
+            print("=== RELEASE CREATED SUCCESSFULLY ===")
+            print(f"Release URL: {result['release'].get('html_url')}")
+            print(f"Release Tag: {result['package']['release_tag']}")
+            print(f"Repository: {repo_owner}/{repo_name}")
+            print(f"Artifacts: {len(result.get('artifacts', []))}")
+            return
+
+        if args.release_command == "export":
+            # Handle release export - same as standalone export but with cleaner output
+            logger.info("Exporting data for release")
+            export_data(args)
+            logger.info("✓ Release export completed successfully")
+
+        elif args.release_command == "validate":
             workflow = ReleaseWorkflow(
                 repo_owner="dummy",  # Not used for validation
                 repo_name="dummy",
@@ -449,6 +911,7 @@ def handle_release_command(args):
                 draft=args.draft,
                 prerelease=args.prerelease,
                 force=args.force,
+                force_rebuild=args.force_rebuild,
                 skip_upload=args.skip_upload,
             )
 
@@ -507,7 +970,9 @@ def handle_release_command(args):
                 print(f"   URL: {release.get('html_url')}")
 
         else:
+            # This should not be reached due to the None check at the start
             print(f"Unknown release command: {args.release_command}")
+            print("Available commands: export, validate, create, status, history")
             sys.exit(1)
 
     except Exception as e:
