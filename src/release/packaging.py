@@ -24,17 +24,42 @@ class FilePackager:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.logger = ReleaseUtils.create_logger("packaging")
 
-    def package_csv_files(self, data_dir: str, release_tag: str) -> Dict[str, Any]:
-        """Package CSV files into a compressed archive."""
-        data_path = Path(data_dir)
+    def package_csv_files(
+        self, data_dir: str, release_tag: str, force: bool = False
+    ) -> Dict[str, Any]:
+        """Package CSV files into a compressed archive.
 
-        # Get all CSV files to include
-        csv_files_to_package = self._get_all_csv_files(data_path)
+        Args:
+            data_dir: Directory containing CSV files to package
+            release_tag: Release tag for naming
+            force: If True, recreate even if archive exists
+        """
+        data_path = Path(data_dir)
 
         archive_name = ReleaseUtils.generate_archive_name("csv_archive", release_tag)
         archive_path = self.output_dir / archive_name
 
+        # Check if archive already exists
+        if archive_path.exists() and not force:
+            file_size = archive_path.stat().st_size
+            checksum = self._calculate_checksum(archive_path)
+            self.logger.logger.info(
+                f"CSV archive already exists, skipping creation: {archive_name} ({file_size} bytes)"
+            )
+            return {
+                "artifact_type": "csv_archive",
+                "file_path": str(archive_path),
+                "file_size": file_size,
+                "checksum": checksum,
+                "created_at": datetime.now(),
+                "skipped": True,
+            }
+
+        # Get all CSV files to include
+        csv_files_to_package = self._get_all_csv_files(data_path)
+
         # Create ZIP archive
+        self.logger.logger.info(f"Creating CSV archive: {archive_name}")
         with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zipf:
             for csv_file, source_path in csv_files_to_package.items():
                 if source_path.exists():
@@ -130,9 +155,38 @@ class FilePackager:
         # Return the file with the latest modification time
         return max(matching_files, key=lambda p: p.stat().st_mtime)
 
-    def package_database(self, data_dir: str, release_tag: str) -> Dict[str, Any]:
-        """Package database file into a compressed archive."""
+    def package_database(
+        self, data_dir: str, release_tag: str, force: bool = False
+    ) -> Dict[str, Any]:
+        """Package database file into a compressed archive.
+
+        Args:
+            data_dir: Directory containing database file
+            release_tag: Release tag for naming
+            force: If True, recreate even if archive exists
+        """
         data_path = Path(data_dir)
+
+        archive_name = ReleaseUtils.generate_archive_name(
+            "database_archive", release_tag
+        )
+        archive_path = self.output_dir / archive_name
+
+        # Check if archive already exists
+        if archive_path.exists() and not force:
+            file_size = archive_path.stat().st_size
+            checksum = self._calculate_checksum(archive_path)
+            self.logger.logger.info(
+                f"Database archive already exists, skipping creation: {archive_name} ({file_size} bytes)"
+            )
+            return {
+                "artifact_type": "database_archive",
+                "file_path": str(archive_path),
+                "file_size": file_size,
+                "checksum": checksum,
+                "created_at": datetime.now(),
+                "skipped": True,
+            }
 
         # Try multiple database file locations in order of preference
         # Prioritize the main data/oevk.db file first
@@ -143,13 +197,9 @@ class FilePackager:
             "oevk_data.duckdb",  # Staging database
         ]
 
-        archive_name = ReleaseUtils.generate_archive_name(
-            "database_archive", release_tag
-        )
-        archive_path = self.output_dir / archive_name
-
         # Find and package the first available database file
         db_file_used = None
+        self.logger.logger.info(f"Creating database archive: {archive_name}")
 
         # First try files in the current data directory
         for db_file in db_files_to_try:

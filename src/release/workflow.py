@@ -106,8 +106,15 @@ class ReleaseWorkflow:
         )
         return metadata
 
-    def create_release_package(self, tag: str) -> tuple[ReleasePackage, list[dict]]:
-        """Create a release package with all artifacts."""
+    def create_release_package(
+        self, tag: str, force_rebuild: bool = False
+    ) -> tuple[ReleasePackage, list[dict]]:
+        """Create a release package with all artifacts.
+
+        Args:
+            tag: Release tag
+            force_rebuild: If True, rebuild ZIP files even if they exist
+        """
         self.logger.log_start("release package creation", tag=tag)
 
         # Validate data first
@@ -119,11 +126,15 @@ class ReleaseWorkflow:
         artifacts = []
 
         # Package CSV exports
-        csv_artifact = self.packager.package_csv_files(self.exports_dir, tag)
+        csv_artifact = self.packager.package_csv_files(
+            self.exports_dir, tag, force=force_rebuild
+        )
         artifacts.append(csv_artifact)
 
         # Package database files - use exports directory which has the database link
-        db_artifact = self.packager.package_database(self.exports_dir, tag)
+        db_artifact = self.packager.package_database(
+            self.exports_dir, tag, force=force_rebuild
+        )
         artifacts.append(db_artifact)
 
         # Create release package using the correct model structure
@@ -195,6 +206,7 @@ class ReleaseWorkflow:
         tag: Optional[str] = None,
         auto_tag: bool = True,
         force: bool = False,
+        force_rebuild: bool = False,
         skip_upload: bool = False,
         **kwargs,
     ) -> Dict[str, Any]:
@@ -204,6 +216,7 @@ class ReleaseWorkflow:
             tag: Release tag (optional, auto-generated if not provided)
             auto_tag: Whether to auto-generate tag if not provided
             force: If True, overwrite existing release with same tag
+            force_rebuild: If True, rebuild ZIP files even if they exist
             skip_upload: If True, skip GitHub upload and only create packages
             **kwargs: Additional arguments for GitHub release creation
         """
@@ -227,7 +240,9 @@ class ReleaseWorkflow:
 
         # Create release package
         self.metrics.log_step_start("release_package_creation")
-        package, artifacts = self.create_release_package(tag)
+        package, artifacts = self.create_release_package(
+            tag, force_rebuild=force_rebuild
+        )
         self.metrics.log_step_completion("release_package_creation")
 
         # Create GitHub release with force option (only if not skipping upload)

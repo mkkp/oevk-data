@@ -303,6 +303,11 @@ Examples:
             "--force", action="store_true", help="Force overwrite existing release"
         )
         release_parser.add_argument(
+            "--force-rebuild",
+            action="store_true",
+            help="Force rebuild ZIP files even if they exist (default: skip if exists)",
+        )
+        release_parser.add_argument(
             "--skip-upload",
             action="store_true",
             help="Skip GitHub upload (create packages only)",
@@ -364,6 +369,11 @@ Examples:
         )
         create_parser.add_argument(
             "--force", action="store_true", help="Force overwrite existing release"
+        )
+        create_parser.add_argument(
+            "--force-rebuild",
+            action="store_true",
+            help="Force rebuild ZIP files even if they exist (default: skip if exists)",
         )
         create_parser.add_argument(
             "--skip-upload",
@@ -824,6 +834,7 @@ def handle_release_command(args):
                 draft=getattr(args, "draft", False),
                 prerelease=getattr(args, "prerelease", False),
                 force=getattr(args, "force", False),
+                force_rebuild=getattr(args, "force_rebuild", False),
                 skip_upload=getattr(args, "skip_upload", False),
             )
 
@@ -900,6 +911,7 @@ def handle_release_command(args):
                 draft=args.draft,
                 prerelease=args.prerelease,
                 force=args.force,
+                force_rebuild=args.force_rebuild,
                 skip_upload=args.skip_upload,
             )
 
