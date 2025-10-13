@@ -5,6 +5,8 @@ import datetime
 import os
 import sys
 import time
+import glob
+import shutil
 from pathlib import Path
 
 # Add project root to Python path for imports
@@ -25,8 +27,10 @@ from src.etl.export import (
     export_tables_to_csv,
 )
 from src.etl.export_canonical_v2 import export_canonical_addresses_with_uuid
+from src.etl.export_canonical_v3 import export_canonical_addresses_optimized
 from src.etl.ingest import download_sources, load_staging_data
 from src.etl.transform_optimized import transform_all_optimized
+from src.utils.config import Config
 from src.utils.pipeline_logging import PipelineMetrics, get_logger, setup_logging
 
 # Release workflow import (conditional to avoid import errors during development)
@@ -129,6 +133,41 @@ Examples:
         help="Skip database cleanup before ingestion (default: cleanup enabled)",
     )
 
+    # Export command
+    export_parser = subparsers.add_parser("export", help="Export data to CSV files")
+    export_parser.add_argument(
+        "--db-path",
+        default="data/oevk.db",
+        help="Path to the database file (default: data/oevk.db)",
+    )
+    export_parser.add_argument(
+        "--output-dir",
+        default="exports",
+        help="Output directory for CSV files (default: exports)",
+    )
+    export_parser.add_argument("--run-tag", help="Custom run tag (default: timestamp)")
+    export_parser.add_argument(
+        "--export-original-addresses",
+        action="store_true",
+        help="Export OriginalAddress CSV files (default: only canonical addresses exported)",
+    )
+    export_parser.add_argument(
+        "--max-workers",
+        type=int,
+        default=8,
+        help="Maximum number of parallel workers for export (default: 8)",
+    )
+    export_parser.add_argument(
+        "--tables-only",
+        action="store_true",
+        help="Export only entity tables, skip address exports (default: export all)",
+    )
+    export_parser.add_argument(
+        "--addresses-only",
+        action="store_true",
+        help="Export only addresses, skip entity tables (default: export all)",
+    )
+
     # Release commands (if available)
     if RELEASE_AVAILABLE:
         release_parser = subparsers.add_parser("release", help="Manage data releases")
@@ -210,6 +249,30 @@ Examples:
             "--github-token", help="GitHub token (default: GITHUB_TOKEN env var)"
         )
 
+        # Release export command
+        release_export_parser = release_subparsers.add_parser(
+            "export", help="Export data for release"
+        )
+        release_export_parser.add_argument(
+            "--db-path",
+            default="data/oevk.db",
+            help="Path to the database file (default: data/oevk.db)",
+        )
+        release_export_parser.add_argument(
+            "--output-dir",
+            default="exports",
+            help="Output directory for CSV files (default: exports)",
+        )
+        release_export_parser.add_argument(
+            "--run-tag", help="Custom run tag (default: timestamp)"
+        )
+        release_export_parser.add_argument(
+            "--max-workers",
+            type=int,
+            default=8,
+            help="Maximum number of parallel workers for export (default: 8)",
+        )
+
         # Release history command
         history_parser = release_subparsers.add_parser(
             "history", help="List recent releases"
@@ -238,6 +301,8 @@ Examples:
 
     if args.command == "run":
         run_pipeline(args)
+    elif args.command == "export":
+        export_data(args)
     elif args.command == "release" and RELEASE_AVAILABLE:
         handle_release_command(args)
     else:
@@ -245,9 +310,112 @@ Examples:
         sys.exit(1)
 
 
+def export_data(args):
+    """Export data to CSV files."""
+    logger.info("Starting data export")
+
+    # Initialize configuration
+    config = Config()
+
+    # Generate run tag
+    run_tag = args.run_tag or datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    logger.info(f"Run tag: {run_tag}")
+
+    # Create output directory
+    os.makedirs(args.output_dir, exist_ok=True)
+
+    # Clean up old export files before starting new export
+    logger.info("Cleaning up old export files...")
+    old_files_removed = 0
+
+    # Remove old Address directories
+    for old_dir in glob.glob(os.path.join(args.output_dir, "*_Address")):
+        if os.path.isdir(old_dir):
+            shutil.rmtree(old_dir)
+            old_files_removed += 1
+            logger.info(f"Removed old directory: {os.path.basename(old_dir)}")
+
+    # Remove old timestamped CSV files (but not symlinks)
+    for old_file in glob.glob(os.path.join(args.output_dir, "*_*.csv")):
+        if os.path.isfile(old_file) and not os.path.islink(old_file):
+            os.remove(old_file)
+            old_files_removed += 1
+            logger.debug(f"Removed old file: {os.path.basename(old_file)}")
+
+    if old_files_removed > 0:
+        logger.info(f"Cleaned up {old_files_removed} old export files/directories")
+    else:
+        logger.info("No old export files found to clean up")
+
+    # Check if database exists
+    if not os.path.exists(args.db_path):
+        logger.error(f"Database not found at {args.db_path}")
+        logger.error("Please run the pipeline first: python src/cli.py run")
+        return
+
+    try:
+        # Get database connection
+        logger.info(f"Connecting to database: {args.db_path}")
+        conn = get_database_connection(args.db_path)
+
+        # Determine what to export
+        export_tables = not args.addresses_only
+        export_addresses = not args.tables_only
+
+        if args.tables_only and args.addresses_only:
+            logger.warning(
+                "Both --tables-only and --addresses-only specified, exporting all"
+            )
+            export_tables = True
+            export_addresses = True
+
+        # Export entity tables
+        if export_tables:
+            logger.info("=== EXPORTING ENTITY TABLES ===")
+            export_tables_to_csv(conn, args.output_dir, run_tag)
+            logger.info("Entity tables export completed")
+
+        # Export addresses
+        if export_addresses:
+            logger.info("=== EXPORTING ADDRESSES ===")
+
+            # Get max_workers from args or config
+            max_workers = getattr(args, "max_workers", None) or config.get(
+                "export.max_workers", 8
+            )
+
+            # Export canonical (deduplicated) addresses with UUID v3 (optimized)
+            logger.info("Exporting canonical addresses (optimized single-query)")
+            export_canonical_addresses_optimized(conn, args.output_dir, run_tag)
+
+            # Optionally export all original addresses (for debugging/analysis)
+            if args.export_original_addresses:
+                logger.info(
+                    "Exporting original addresses (--export-original-addresses enabled)"
+                )
+                export_addresses_partitioned(conn, args.output_dir, run_tag)
+            else:
+                logger.info(
+                    "Skipping original address export (use --export-original-addresses to enable)"
+                )
+
+        # Create release symlinks for validation compatibility
+        create_release_symlinks(args.output_dir, run_tag, args.db_path)
+
+        conn.close()
+        logger.info("✓ Export completed successfully")
+
+    except Exception as e:
+        logger.error(f"Export failed: {e}", exc_info=True)
+        raise
+
+
 def run_pipeline(args):
     """Run the complete data processing pipeline."""
     logger.info("Starting OEVK data processing pipeline")
+
+    # Initialize configuration
+    config = Config()
 
     # Initialize performance metrics
     metrics = PipelineMetrics("oevk_pipeline")
@@ -395,8 +563,9 @@ def run_pipeline(args):
 
             export_tables_to_csv(conn, args.output_dir, run_tag)
 
-            # Export canonical (deduplicated) addresses with UUID v3
-            export_canonical_addresses_with_uuid(conn, args.output_dir, run_tag)
+            # Export canonical (deduplicated) addresses with UUID v3 (optimized)
+            logger.info("Exporting canonical addresses (optimized single-query)")
+            export_canonical_addresses_optimized(conn, args.output_dir, run_tag)
 
             # Optionally export all original addresses (for debugging/analysis)
             if args.export_original_addresses:
@@ -452,7 +621,13 @@ def handle_release_command(args):
         sys.exit(1)
 
     try:
-        if args.release_command == "validate":
+        if args.release_command == "export":
+            # Handle release export - same as standalone export but with cleaner output
+            logger.info("Exporting data for release")
+            export_data(args)
+            logger.info("✓ Release export completed successfully")
+
+        elif args.release_command == "validate":
             workflow = ReleaseWorkflow(
                 repo_owner="dummy",  # Not used for validation
                 repo_name="dummy",
