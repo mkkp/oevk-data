@@ -18,14 +18,15 @@ sys.path.insert(0, str(project_root / "src"))
 sys.path.insert(0, str(Path(__file__).parent))
 
 
-from database.connection import get_database_connection
-from etl.export import (
+from src.database.connection import get_database_connection
+from src.etl.export import (
     create_release_symlinks,
     export_addresses_partitioned,
     export_tables_to_csv,
 )
-from etl.ingest import download_sources, load_staging_data
-from etl.transform_optimized import transform_all_optimized
+from src.etl.export_canonical_v2 import export_canonical_addresses_with_uuid
+from src.etl.ingest import download_sources, load_staging_data
+from src.etl.transform_optimized import transform_all_optimized
 from src.utils.pipeline_logging import PipelineMetrics, get_logger, setup_logging
 
 # Release workflow import (conditional to avoid import errors during development)
@@ -46,7 +47,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Run complete pipeline with default settings
+  # Run complete pipeline with default settings (cleans database before ingestion)
   python src/cli.py run
 
   # Run pipeline with custom database and output directory
@@ -54,6 +55,12 @@ Examples:
 
   # Run only specific stages
   python src/cli.py run --stages ingest,transform
+
+  # Preserve existing database (skip cleanup before ingestion)
+  python src/cli.py run --no-cleanup
+
+  # Disable deduplication
+  python src/cli.py run --no-deduplication
         """,
     )
 
@@ -105,6 +112,21 @@ Examples:
         "--no-optimized",
         action="store_true",
         help="Use original transformation instead of optimized (default: optimized enabled)",
+    )
+    run_parser.add_argument(
+        "--no-deduplication",
+        action="store_true",
+        help="Disable address deduplication (default: deduplication enabled)",
+    )
+    run_parser.add_argument(
+        "--export-original-addresses",
+        action="store_true",
+        help="Export OriginalAddress CSV files (default: only canonical addresses exported)",
+    )
+    run_parser.add_argument(
+        "--no-cleanup",
+        action="store_true",
+        help="Skip database cleanup before ingestion (default: cleanup enabled)",
     )
 
     # Release commands (if available)
@@ -243,9 +265,6 @@ def run_pipeline(args):
         exist_ok=True,
     )
 
-    # Get database connection
-    conn = get_database_connection(args.db_path)
-
     # Define source URLs
     sources = {
         "oevk_json": "https://static.valasztas.hu/dyn/oevk_data/oevk.json",
@@ -255,10 +274,28 @@ def run_pipeline(args):
     # Determine which stages to run
     stages = [stage.strip() for stage in args.stages.split(",")]
 
+    # Clean up old database BEFORE creating connection (if ingestion stage is included)
+    if "ingest" in stages:
+        logger.info("=== DATABASE CLEANUP ===")
+        if not (hasattr(args, "no_cleanup") and args.no_cleanup):
+            if os.path.exists(args.db_path):
+                logger.info(f"Removing existing database: {args.db_path}")
+                os.remove(args.db_path)
+                logger.info("Database removed successfully - starting with clean slate")
+            else:
+                logger.info("No existing database found - starting fresh")
+        else:
+            logger.info("Database cleanup skipped (--no-cleanup flag set)")
+            logger.info("Existing data will be preserved")
+
+    # Get database connection (after cleanup)
+    conn = get_database_connection(args.db_path)
+
     try:
         # Run ingestion stage
         if "ingest" in stages:
             logger.info("=== INGESTION STAGE ===")
+
             metrics.log_step_start("ingest")
             file_paths = download_sources(sources, args.staging_dir)
 
@@ -307,13 +344,26 @@ def run_pipeline(args):
 
                 transform_all(conn, run_tag)
             else:
-                transform_all_optimized(
+                enable_dedup = not (
+                    hasattr(args, "no_deduplication") and args.no_deduplication
+                )
+                dedup_result = transform_all_optimized(
                     conn,
                     run_tag,
                     chunk_size=args.chunk_size,
                     parallel=not args.no_parallel,
                     db_path=args.db_path,
+                    enable_deduplication=enable_dedup,
                 )
+
+                # Log deduplication results if available
+                if dedup_result and "deduplication_report" in dedup_result:
+                    report = dedup_result["deduplication_report"]
+                    logger.info(
+                        f"Deduplication: {report.total_addresses:,} addresses → "
+                        f"{report.canonical_addresses_created:,} canonical "
+                        f"({report.duplicates_found:,} duplicates merged)"
+                    )
 
             # Run public space extraction after main transformation
             logger.info("=== PUBLIC SPACE EXTRACTION ===")
@@ -344,7 +394,20 @@ def run_pipeline(args):
             ]
 
             export_tables_to_csv(conn, args.output_dir, run_tag)
-            export_addresses_partitioned(conn, args.output_dir, run_tag)
+
+            # Export canonical (deduplicated) addresses with UUID v3
+            export_canonical_addresses_with_uuid(conn, args.output_dir, run_tag)
+
+            # Optionally export all original addresses (for debugging/analysis)
+            if args.export_original_addresses:
+                logger.info(
+                    "Exporting original addresses (--export-original-addresses enabled)"
+                )
+                export_addresses_partitioned(conn, args.output_dir, run_tag)
+            else:
+                logger.info(
+                    "Skipping original address export (use --export-original-addresses to enable)"
+                )
 
             # Create release symlinks for validation compatibility
             create_release_symlinks(args.output_dir, run_tag, args.db_path)

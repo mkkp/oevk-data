@@ -167,6 +167,76 @@ CREATE INDEX IF NOT EXISTS idx_Address_PollingStation_ID ON Address(PollingStati
 CREATE INDEX IF NOT EXISTS idx_Address_County_ID ON Address(County_ID);
 CREATE INDEX IF NOT EXISTS idx_Address_Settlement_ID ON Address(Settlement_ID);
 
+-- Deduplication tables
+-- CanonicalAddress table for deduplicated addresses
+CREATE TABLE IF NOT EXISTS CanonicalAddress (
+    ID TEXT PRIMARY KEY, -- xxhash64(CountyCode|SettlementName|FullAddress)
+    CountyCode TEXT NOT NULL,
+    SettlementName TEXT NOT NULL,
+    StreetName TEXT NOT NULL,
+    HouseNumber TEXT NOT NULL,
+    FullAddress TEXT NOT NULL, -- Formatted Hungarian address (e.g., "Körtöltés utca 1/D.")
+    AccessibilityFlag TEXT,
+    CreatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (CountyCode, SettlementName, FullAddress)
+);
+
+-- AddressMapping table to track original to canonical address relationships
+CREATE TABLE IF NOT EXISTS AddressMapping (
+    ID TEXT PRIMARY KEY, -- xxhash64(OriginalAddressID|CanonicalAddressID)
+    OriginalAddressID TEXT NOT NULL,
+    CanonicalAddressID TEXT NOT NULL,
+    MappingType TEXT DEFAULT 'deduplication', -- deduplication, manual_override, etc.
+    CreatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (CanonicalAddressID) REFERENCES CanonicalAddress(ID),
+    UNIQUE (OriginalAddressID, CanonicalAddressID)
+);
+
+-- AddressPollingStations table to preserve polling station assignments
+CREATE TABLE IF NOT EXISTS AddressPollingStations (
+    ID TEXT PRIMARY KEY, -- xxhash64(CanonicalAddressID|PollingStationID)
+    CanonicalAddressID TEXT NOT NULL,
+    PollingStationID TEXT NOT NULL,
+    CreatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (CanonicalAddressID) REFERENCES CanonicalAddress(ID),
+    FOREIGN KEY (PollingStationID) REFERENCES PollingStation(ID),
+    UNIQUE (CanonicalAddressID, PollingStationID)
+);
+
+-- AddressPIRCodes table to preserve PIR code relationships
+CREATE TABLE IF NOT EXISTS AddressPIRCodes (
+    ID TEXT PRIMARY KEY, -- xxhash64(CanonicalAddressID|PIRCode)
+    CanonicalAddressID TEXT NOT NULL,
+    PIRCode TEXT NOT NULL,
+    CreatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (CanonicalAddressID) REFERENCES CanonicalAddress(ID),
+    UNIQUE (CanonicalAddressID, PIRCode)
+);
+
+-- DeduplicationReport table for audit and verification
+CREATE TABLE IF NOT EXISTS DeduplicationReport (
+    ID TEXT PRIMARY KEY, -- xxhash64(RunID)
+    RunID TEXT NOT NULL,
+    TotalAddresses INTEGER NOT NULL,
+    DuplicatesFound INTEGER NOT NULL,
+    CanonicalAddressesCreated INTEGER NOT NULL,
+    ProcessingTimeMs INTEGER NOT NULL,
+    Status TEXT NOT NULL, -- completed, failed, partial
+    ErrorMessage TEXT,
+    CreatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (RunID)
+);
+
+-- New indexes for deduplication tables
+CREATE INDEX IF NOT EXISTS idx_CanonicalAddress_County_Settlement_Street ON CanonicalAddress(CountyCode, SettlementName, StreetName);
+CREATE INDEX IF NOT EXISTS idx_AddressMapping_OriginalAddressID ON AddressMapping(OriginalAddressID);
+CREATE INDEX IF NOT EXISTS idx_AddressMapping_CanonicalAddressID ON AddressMapping(CanonicalAddressID);
+CREATE INDEX IF NOT EXISTS idx_AddressPollingStations_CanonicalAddressID ON AddressPollingStations(CanonicalAddressID);
+CREATE INDEX IF NOT EXISTS idx_AddressPollingStations_PollingStationID ON AddressPollingStations(PollingStationID);
+CREATE INDEX IF NOT EXISTS idx_AddressPIRCodes_CanonicalAddressID ON AddressPIRCodes(CanonicalAddressID);
+CREATE INDEX IF NOT EXISTS idx_DeduplicationReport_RunID ON DeduplicationReport(RunID);
+CREATE INDEX IF NOT EXISTS idx_DeduplicationReport_CreatedAt ON DeduplicationReport(CreatedAt);
+
 -- New indexes for public space tables
 CREATE INDEX IF NOT EXISTS idx_PublicSpaceType_PublicSpaceType ON PublicSpaceType(PublicSpaceType);
 CREATE INDEX IF NOT EXISTS idx_PublicSpaceName_PublicSpaceName ON PublicSpaceName(PublicSpaceName);

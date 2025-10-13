@@ -94,6 +94,40 @@ The unique key is indicated by UC - Unique Constraint.
     * Settlement_ID (FK): Link to the Settlement entity.
     * NationalIndividualElectoralDistrict_ID (FK): Link to the NationalIndividualElectoralDistrict entity.
 
+12. **CanonicalAddress**
+    * ID (PK): Unique identifier (deterministic hash)
+    * CountyCode: The county code
+    * SettlementName: The settlement name
+    * StreetName: The street name
+    * HouseNumber: The house number
+    * AccessibilityFlag: Accessibility flag
+
+13. **AddressMapping**
+    * ID (PK): Unique identifier
+    * OriginalAddress_ID (FK): Link to the original Address entity
+    * CanonicalAddress_ID (FK): Link to the CanonicalAddress entity
+
+14. **AddressPollingStations**
+    * ID (PK): Unique identifier
+    * CanonicalAddress_ID (FK): Link to the CanonicalAddress entity
+    * PollingStation_ID (FK): Link to the PollingStation entity
+
+15. **AddressPIRCodes**
+    * ID (PK): Unique identifier
+    * CanonicalAddress_ID (FK): Link to the CanonicalAddress entity
+    * PIRCode: The PIR code
+
+16. **DeduplicationReport**
+    * ID (PK): Unique identifier (deterministic hash)
+    * RunID: Unique run identifier
+    * TotalAddresses: Total number of addresses processed
+    * DuplicatesFound: Number of duplicate addresses found
+    * CanonicalAddressesCreated: Number of canonical addresses created
+    * ProcessingTimeMS: Processing time in milliseconds
+    * Status: Processing status (completed/failed)
+    * ErrorMessage: Error message if failed
+    * CreatedAt: Report creation timestamp
+
 #### Relationships
 
 * **County** 1--* **Settlement**: One county can have multiple settlements, but one settlement belongs to only one county.
@@ -231,6 +265,45 @@ erDiagram
         int NationalIndividualElectoralDistrict_ID FK "Link to the OEVK entity"
     }
 
+    CanonicalAddress {
+        int ID PK "Unique identifier (deterministic hash)"
+        string CountyCode "The county code"
+        string SettlementName "The settlement name"
+        string StreetName "The street name"
+        string HouseNumber "The house number"
+        string AccessibilityFlag "Accessibility flag"
+    }
+
+    AddressMapping {
+        int ID PK "Unique identifier"
+        int OriginalAddress_ID FK "Link to the original Address entity"
+        int CanonicalAddress_ID FK "Link to the CanonicalAddress entity"
+    }
+
+    AddressPollingStations {
+        int ID PK "Unique identifier"
+        int CanonicalAddress_ID FK "Link to the CanonicalAddress entity"
+        int PollingStation_ID FK "Link to the PollingStation entity"
+    }
+
+    AddressPIRCodes {
+        int ID PK "Unique identifier"
+        int CanonicalAddress_ID FK "Link to the CanonicalAddress entity"
+        string PIRCode "The PIR code"
+    }
+
+    DeduplicationReport {
+        int ID PK "Unique identifier (deterministic hash)"
+        string RunID "Unique run identifier"
+        int TotalAddresses "Total number of addresses processed"
+        int DuplicatesFound "Number of duplicate addresses found"
+        int CanonicalAddressesCreated "Number of canonical addresses created"
+        int ProcessingTimeMS "Processing time in milliseconds"
+        string Status "Processing status (completed/failed)"
+        string ErrorMessage "Error message if failed"
+        datetime CreatedAt "Report creation timestamp"
+    }
+
     County ||--o{ Settlement : "contains"
     County ||--o{ NationalIndividualElectoralDistrict : "contains"
     Settlement ||--o{ SettlementIndividualElectoralDistrict : "contains"
@@ -255,6 +328,14 @@ erDiagram
     County ||..o{ PollingStation : "references"
     Settlement ||..o{ PollingStation : "references"
     NationalIndividualElectoralDistrict ||..o{ PollingStation : "references"
+
+    %% Deduplication relationships
+    Address ||--o{ AddressMapping : "maps to"
+    CanonicalAddress ||--o{ AddressMapping : "maps from"
+    CanonicalAddress ||--o{ AddressPollingStations : "assigned to"
+    PollingStation ||--o{ AddressPollingStations : "serves"
+    CanonicalAddress ||--o{ AddressPIRCodes : "has"
+    DeduplicationReport ||--|| CanonicalAddress : "reports on"
 
 ```
 ## Data samples

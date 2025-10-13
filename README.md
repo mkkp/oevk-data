@@ -86,7 +86,7 @@ oevk-data/
 To run the complete data transformation pipeline locally:
 
 ```bash
-# Run complete pipeline with default settings
+# Run complete pipeline with default settings (canonical addresses only)
 python -m src.cli run
 
 # Run with custom database and output directories
@@ -96,8 +96,14 @@ python -m src.cli run --db-path data/oevk.db --output-dir exports/ --staging-dir
 python -m src.cli run --stages ingest,transform,export
 python -m src.cli run --stages transform  # Only transformation stage
 
+# Export original addresses for debugging/analysis
+python -m src.cli run --export-original-addresses
+
 # Run with custom run tag
 python -m src.cli run --run-tag $(date +%Y%m%d_%H%M%S)
+
+# Disable deduplication
+python -m src.cli run --no-deduplication
 
 # Show all available options
 python -m src.cli run --help
@@ -208,7 +214,8 @@ Settlement: 3,177 rows
 NationalIndividualElectoralDistrict: 106 rows
 SettlementIndividualElectoralDistrict: 4,677 rows
 PollingStation: 8,555 rows
-Address: 3,336,202 rows
+Address: 3,336,202 rows (original)
+CanonicalAddress: 3,323,118 rows (deduplicated with 0.39% reduction)
 PostalCode: 3,106 rows
 PostalCode_Settlement: 3,106 rows
 PublicSpaceName: 25,117 rows
@@ -221,7 +228,9 @@ SettlementPublicSpaces: 122,524 rows
 Each release creates two main artifacts:
 
 1. **CSV Archive** (`oevk-data-csv-{tag}.zip`): Contains all CSV files
-   - `addresses/` - Directory containing address files split by settlement (e.g., `Address_001_Budapest.csv`, `Address_002_Debrecen.csv`)
+   - `{run_tag}_Address/` - Directory containing address files split by settlement:
+     - `Address_001_Aba.csv` - **Canonical deduplicated addresses** (UUID v3 format)
+     - `OriginalAddress_001_Aba.csv` - All original addresses with canonical references
    - `settlements.csv` - Settlement information
    - `counties.csv` - County data
    - `polling_stations.csv` - Polling station details
@@ -231,7 +240,100 @@ Each release creates two main artifacts:
    - `SettlementPublicSpaces.csv` - 122,524 settlement-public space relationships
 
 2. **Database Archive** (`oevk-data-db-{tag}.zip`): Contains main transformed database
-   - `oevk.db` - Complete relational database with all tables including public space entities
+   - `oevk.db` - Complete relational database with all tables including public space entities and canonical addresses
+
+### Address Export Format
+
+The pipeline exports addresses in two formats. **By default, only canonical addresses are exported.** Use `--export-original-addresses` to also export original addresses.
+
+#### Canonical Addresses (Deduplicated) - Always Exported
+- **Files**: `Address_{settlement_code}_{settlement_name}.csv`
+- **IDs**: UUID v3 with 'oevk.hu' namespace
+- **Structure**: Same as OriginalAddress + `OriginalAddressCount` column
+- **Content**: Only unique canonical addresses (one per unique formatted address)
+- **Columns** (16 total):
+  1. `ID` - Canonical address UUID v3
+  2. `Sequence` - Minimum sequence from merged addresses
+  3. `OriginalOrder` - Minimum original order from merged addresses
+  4. `FullAddress` - Formatted Hungarian address (e.g., "Ady Endre utca 1.")
+  5. `PublicSpaceName` - Street name without type (e.g., "Ady Endre")
+  6. `PublicSpaceType` - Street type from original address (e.g., "utca", "út", "tér")
+  7. `HouseNumber` - House number with leading zeros (e.g., "000001")
+  8. `Building` - Building identifier from original address (cleaned: zero-only → empty string)
+  9. `Staircase` - Staircase identifier from original address (cleaned: zero-only → empty string)
+  10. `PostalCode_ID` - Postal code UUID v3
+  11. `PollingStation_ID` - Polling station UUID v3
+  12. `SettlementIndividualElectoralDistrict_ID` - TEVK UUID v3
+  13. `County_ID` - County UUID v3
+  14. `Settlement_ID` - Settlement UUID v3
+  15. `NationalIndividualElectoralDistrict_ID` - OEVK UUID v3
+  16. **`OriginalAddressCount`** - Number of original addresses merged into this canonical address
+
+- **Field Cleaning Rules**:
+  - `PublicSpaceType`, `Building`, `Staircase`: Retrieved from original Address records via `AddressMapping` join
+  - `Building`/`Staircase` zero-only cleaning: Values containing only zeros (`'0'`, `'00'`, `'000'`) converted to empty string
+  - NULL handling: NULL/empty values exported as empty strings in CSV
+
+- **Example**:
+  ```csv
+  ID,Sequence,OriginalOrder,FullAddress,PublicSpaceName,PublicSpaceType,HouseNumber,Building,Staircase,PostalCode_ID,PollingStation_ID,SettlementIndividualElectoralDistrict_ID,County_ID,Settlement_ID,NationalIndividualElectoralDistrict_ID,OriginalAddressCount
+  32e85e9e-7bac-372b-bd74-7e8ca77025d1,3644,1103644,Ady Endre utca 1.,Ady Endre,utca,000001,,,4381f027-c7e3-3d1c-98fd-5d4f518aabdc,77b6993d-1a44-3ab5-b6a2-4397fded9596,9cad8436-1c1b-3f88-ad0d-6523a7617cfb,826cb982-9964-30d5-ab9d-b6a68d56e999,e62e407d-5ada-397a-8481-1368e54828d0,3a8239cb-cd9b-34fb-9f1b-a2344ba602fb,1
+  8f3a1b2c-4d5e-3f6a-9b8c-7d6e5f4a3b2c,3646,1103646,Körtöltés utca 1/D.,Körtöltés,utca,000001,D,,4381f027-c7e3-3d1c-98fd-5d4f518aabdc,77b6993d-1a44-3ab5-b6a2-4397fded9596,9cad8436-1c1b-3f88-ad0d-6523a7617cfb,826cb982-9964-30d5-ab9d-b6a68d56e999,e62e407d-5ada-397a-8481-1368e54828d0,3a8239cb-cd9b-34fb-9f1b-a2344ba602fb,1
+  ```
+
+#### Original Addresses (All Records) - Optional Export
+- **Files**: `OriginalAddress_{settlement_code}_{settlement_name}.csv`
+- **Export**: Use `--export-original-addresses` CLI flag to enable
+- **IDs**: UUID v3 with 'oevk.hu' namespace
+- **Structure**: Standard address structure with `CanonicalAddress_ID` reference
+- **Content**: All original addresses with references to their canonical address
+- **Purpose**: Debugging and comparison with deduplicated data
+- **Key difference**: Has `CanonicalAddress_ID` instead of `OriginalAddressCount`
+- **Note**: Only export if needed for analysis as it creates large files (3.3M records)
+
+#### Canonical Address Export Structure
+
+Visual representation of the canonical address export with field retrieval:
+
+```mermaid
+flowchart LR
+    subgraph CA[CanonicalAddress Table]
+        CA1[ID<br/>CountyCode<br/>SettlementName<br/>FullAddress<br/>StreetName<br/>HouseNumber]
+    end
+    
+    subgraph AM[AddressMapping]
+        AM1[OriginalAddressID<br/>CanonicalAddressID]
+    end
+    
+    subgraph OA[Original Address]
+        OA1[PublicSpaceType<br/>Building<br/>Staircase<br/>Foreign Keys]
+    end
+    
+    subgraph Export[CSV Export - 16 Columns]
+        E1[ID UUID v3]
+        E2[Sequence, OriginalOrder]
+        E3[FullAddress]
+        E4[PublicSpaceName, PublicSpaceType]
+        E5[HouseNumber]
+        E6[Building, Staircase<br/>cleaned: '0' → '']
+        E7[Foreign Key UUIDs<br/>PostalCode, PollingStation, etc.]
+        E8[OriginalAddressCount]
+    end
+    
+    CA --> AM
+    AM --> OA
+    CA --> Export
+    OA --> Export
+    
+    style E6 fill:#ffffcc
+    style Export fill:#e6f3ff
+```
+
+**Key Points:**
+- Fields from CanonicalAddress: ID, FullAddress, PublicSpaceName, HouseNumber
+- Fields from Original Address (via AddressMapping): PublicSpaceType, Building, Staircase, Foreign Keys
+- Building/Staircase cleaning: Zero-only values (`'0'`, `'00'`, `'000'`) → empty string
+- All IDs converted to UUID v3 with 'oevk.hu' namespace
 
 ### Release Performance Targets
 
@@ -298,25 +400,35 @@ After successful execution, the export directory will contain:
 
 ```
 data/export/{RUN_TAG}/
-├── County.csv
-├── Settlement.csv
-├── NationalIndividualElectoralDistrict.csv
-├── SettlementIndividualElectoralDistrict.csv
-├── PostalCode.csv
-├── PostalCode_Settlement.csv
-├── PollingStation.csv
-├── PublicSpaceName.csv
-├── PublicSpaceType.csv
-├── SettlementPublicSpaces.csv
-└── Address/
-    ├── Address_001_Budapest_I_kerület.csv
-    ├── Address_002_Budapest_II_kerület.csv
-    └── ... (one file per settlement)
+├── {RUN_TAG}_County.csv
+├── {RUN_TAG}_Settlement.csv
+├── {RUN_TAG}_NationalIndividualElectoralDistrict.csv
+├── {RUN_TAG}_SettlementIndividualElectoralDistrict.csv
+├── {RUN_TAG}_PostalCode.csv
+├── {RUN_TAG}_PostalCode_Settlement.csv
+├── {RUN_TAG}_PollingStation.csv
+├── {RUN_TAG}_PublicSpaceName.csv
+├── {RUN_TAG}_PublicSpaceType.csv
+├── {RUN_TAG}_SettlementPublicSpaces.csv
+├── {RUN_TAG}_CanonicalAddress.csv (consolidated deduplicated addresses)
+└── {RUN_TAG}_Address/
+    ├── Address_001_Aba.csv (canonical deduplicated, UUID v3)
+    ├── Address_002_Abony.csv (canonical deduplicated, UUID v3)
+    ├── OriginalAddress_001_Aba.csv (all original with canonical refs, UUID v3)
+    ├── OriginalAddress_002_Abony.csv (all original with canonical refs, UUID v3)
+    └── ... (two files per settlement: canonical + original)
 ```
+
+**Key Changes:**
+- All IDs use UUID v3 format with 'oevk.hu' namespace
+- Reference lists are comma-separated without brackets
+- Canonical and original address files are in the same directory
+- Canonical addresses show aggregated relationships (PollingStationIDs, PIRCodes)
+- OriginalAddressCount shows how many duplicates were merged
 
 ## Data Model
 
-The pipeline transforms source data into 11 normalized tables:
+The pipeline transforms source data into 14 normalized tables:
 
 1. **County** (`megye`) - Administrative counties
 2. **Settlement** (`település`) - Cities, towns, villages
@@ -325,10 +437,14 @@ The pipeline transforms source data into 11 normalized tables:
 5. **PostalCode** (`irányítószám`) - Postal codes
 6. **PostalCode_Settlement** - Junction table for postal code-settlement relationships
 7. **PollingStation** (`szavazókör`) - Voting locations
-8. **Address** (`cím`) - Individual addresses with electoral assignments
-9. **PublicSpaceName** - Unique public space names extracted from addresses
-10. **PublicSpaceType** - Unique public space types (utca, tér, etc.)
-11. **SettlementPublicSpaces** - Many-to-many relationships between settlements and public spaces
+8. **Address** (`cím`) - Individual addresses with electoral assignments (original)
+9. **CanonicalAddress** - Deduplicated unique addresses with Hungarian formatting
+10. **AddressMapping** - Mapping between original and canonical addresses
+11. **AddressPollingStations** - Canonical address to polling station relationships
+12. **AddressPIRCodes** - Canonical address to PIR code relationships
+13. **PublicSpaceName** - Unique public space names extracted from addresses
+14. **PublicSpaceType** - Unique public space types (utca, tér, etc.)
+15. **SettlementPublicSpaces** - Many-to-many relationships between settlements and public spaces
 
 ### Data Structure Diagram
 
@@ -346,6 +462,10 @@ erDiagram
     Settlement ||--o{ SettlementPublicSpaces : has
     PublicSpaceName ||--o{ SettlementPublicSpaces : has
     PublicSpaceType ||--o{ SettlementPublicSpaces : has
+    Address ||--|| AddressMapping : "maps to"
+    CanonicalAddress ||--o{ AddressMapping : "has many"
+    CanonicalAddress ||--o{ AddressPollingStations : "has"
+    CanonicalAddress ||--o{ AddressPIRCodes : "has"
     
     County {
         string ID PK "xxhash64(CountyCode)"
@@ -422,6 +542,31 @@ erDiagram
         string PublicSpaceName_ID FK
         string PublicSpaceType_ID FK
     }
+    CanonicalAddress {
+        string ID PK "xxhash64(CountyCode|SettlementName|FullAddress)"
+        string CountyCode
+        string SettlementName
+        string StreetName
+        string HouseNumber
+        string FullAddress "Formatted Hungarian address"
+        string AccessibilityFlag
+        timestamp CreatedAt
+    }
+    AddressMapping {
+        string ID PK "xxhash64(OriginalAddressID|CanonicalAddressID)"
+        string OriginalAddressID FK
+        string CanonicalAddressID FK
+    }
+    AddressPollingStations {
+        string ID PK "xxhash64(CanonicalAddressID|PollingStationID)"
+        string CanonicalAddressID FK
+        string PollingStationID FK
+    }
+    AddressPIRCodes {
+        string ID PK "xxhash64(CanonicalAddressID|PIRCode)"
+        string CanonicalAddressID FK
+        string PIRCode FK
+    }
 ```
 
 ### Transformation Flow
@@ -432,9 +577,10 @@ flowchart TD
     B --> C[Staging Tables]
     C --> D[Transformation]
     D --> E[Public Space Extraction]
-    E --> F[Normalized Tables]
-    F --> G[Export]
-    G --> H[CSV Files]
+    E --> F[Address Deduplication]
+    F --> G[Normalized Tables]
+    G --> H[Export]
+    H --> I[CSV Files]
     
     subgraph A [Source Data]
         A1[oevk.json<br/>OEVK boundaries]
@@ -467,59 +613,82 @@ flowchart TD
         E3[Create Settlement Relationships]
     end
     
-    subgraph F [Normalized Tables]
-        F1[County]
-        F2[Settlement]
-        F3[NationalIndividualElectoralDistrict]
-        F4[SettlementIndividualElectoralDistrict]
-        F5[PostalCode]
-        F6[PostalCode_Settlement]
-        F7[PollingStation]
-        F8[Address]
-        F9[PublicSpaceName]
-        F10[PublicSpaceType]
-        F11[SettlementPublicSpaces]
+    subgraph F [Address Deduplication]
+        F1[Format Addresses<br/>Hungarian conventions]
+        F2[Generate Canonical IDs<br/>xxhash64]
+        F3[Create Canonical Addresses<br/>0.39% reduction]
+        F4[Preserve Relationships<br/>Polling Stations, PIR Codes]
     end
     
-    subgraph G [Export]
-        G1[Consolidated CSVs]
-        G2[Partitioned Addresses]
+    subgraph G [Normalized Tables]
+        G1[County]
+        G2[Settlement]
+        G3[NationalIndividualElectoralDistrict]
+        G4[SettlementIndividualElectoralDistrict]
+        G5[PostalCode]
+        G6[PostalCode_Settlement]
+        G7[PollingStation]
+        G8[Address Original]
+        G9[CanonicalAddress]
+        G10[AddressMapping]
+        G11[AddressPollingStations]
+        G12[AddressPIRCodes]
+        G13[PublicSpaceName]
+        G14[PublicSpaceType]
+        G15[SettlementPublicSpaces]
     end
     
-    subgraph H [CSV Files]
-        H1[Entity CSVs<br/>County, Settlement, etc.]
-        H2[Settlement-partitioned<br/>Address files]
-        H3[Public Space CSVs<br/>Names, Types, Relationships]
+    subgraph H [Export]
+        H1[Consolidated CSVs]
+        H2[Canonical Addresses<br/>UUID v3]
+        H3[Original Addresses<br/>UUID v3]
     end
     
-    D1 --> F1
-    D1 --> F2
-    D2 --> F3
-    D2 --> F4
-    D3 --> F5
-    D6 --> F6
-    D4 --> F7
-    D5 --> F8
+    subgraph I [CSV Files]
+        I1[Entity CSVs<br/>County, Settlement, etc.]
+        I2[Address_{code}_{name}.csv<br/>Canonical deduplicated]
+        I3[OriginalAddress_{code}_{name}.csv<br/>With canonical refs]
+        I4[Public Space CSVs<br/>Names, Types, Relationships]
+    end
     
-    E1 --> F9
-    E2 --> F10
-    E3 --> F11
+    D1 --> G1
+    D1 --> G2
+    D2 --> G3
+    D2 --> G4
+    D3 --> G5
+    D6 --> G6
+    D4 --> G7
+    D5 --> G8
     
-    F1 --> G1
-    F2 --> G1
-    F3 --> G1
-    F4 --> G1
-    F5 --> G1
-    F6 --> G1
-    F7 --> G1
-    F8 --> G2
-    F9 --> G1
-    F10 --> G1
-    F11 --> G1
+    E1 --> G13
+    E2 --> G14
+    E3 --> G15
+    
+    F1 --> F2
+    F2 --> F3
+    F3 --> F4
+    F4 --> G9
+    F4 --> G10
+    F4 --> G11
+    F4 --> G12
     
     G1 --> H1
-    G2 --> H2
-    G1 --> H3
+    G2 --> H1
+    G3 --> H1
+    G4 --> H1
+    G5 --> H1
+    G6 --> H1
+    G7 --> H1
+    G9 --> H2
+    G8 --> H3
+    G13 --> H1
+    G14 --> H1
+    G15 --> H1
+    
+    H1 --> I1
+    H2 --> I2
+    H3 --> I3
+    H1 --> I4
 ```
 
 ### Key Relationships
@@ -532,6 +701,15 @@ flowchart TD
 - Public spaces are extracted from addresses and linked to settlements
 - Each public space has a name and type (utca, tér, etc.)
 - Settlements can have multiple public spaces, and public spaces can appear in multiple settlements
+
+### Deduplication Relationships
+
+- Each original **Address** maps to exactly one **CanonicalAddress** through **AddressMapping**
+- Each **CanonicalAddress** can have many original addresses (13,084 duplicates merged)
+- **AddressPollingStations** preserves all polling station assignments for canonical addresses
+- **AddressPIRCodes** preserves all PIR codes for canonical addresses
+- Canonical IDs are deterministic: same formatted address → same canonical ID
+- Export uses UUID v3 with 'oevk.hu' namespace for global uniqueness
 
 ### Field Descriptions
 

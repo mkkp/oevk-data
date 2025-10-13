@@ -3,7 +3,8 @@
 import duckdb
 import time
 import concurrent.futures
-from typing import List, Tuple
+from typing import List, Tuple, Optional
+import polars as pl
 
 # Hash functions are now implemented inline using DuckDB's built-in functions
 # from src.etl.hashing import (
@@ -20,6 +21,8 @@ from typing import List, Tuple
 #     hash_address_id,
 # )
 from src.utils.pipeline_logging import get_logger
+from src.utils.config import get_config
+from src.etl.deduplicate import AddressDeduplicator
 
 logger = get_logger(__name__)
 
@@ -44,7 +47,7 @@ def register_hash_functions(db_connection: duckdb.DuckDBPyConnection) -> None:
         """)
 
         db_connection.execute("""
-            CREATE OR REPLACE MACRO hash_tevk_id(county_code, settlement_code, tevk, oevk) AS lower(substring(md5(county_code || '|' || settlement_code || '|' || COALESCE(tevk, '') || '|' || oevk), 1, 16))
+            CREATE OR REPLACE MACRO hash_tevk_id(county_code, settlement_code, tevk, oevk) AS lower(substring(md5(county_code || '|' || settlement_code || '|' || COALESCE(tevk, '-') || '|' || oevk), 1, 16))
         """)
 
         db_connection.execute("""
@@ -79,7 +82,8 @@ def transform_all_optimized(
     chunk_size: int = 50000,
     parallel: bool = False,
     db_path: str = "",
-) -> None:
+    enable_deduplication: bool = True,
+) -> Optional[dict]:
     """Transforms staging data into all 8 target tables with optimized performance.
 
     Args:
@@ -87,6 +91,11 @@ def transform_all_optimized(
         run_tag: The run tag to process from staging tables.
         chunk_size: Number of records to process per chunk (default: 50,000)
         parallel: Whether to process chunks in parallel (default: False)
+        db_path: Path to database file (required for parallel processing)
+        enable_deduplication: Whether to enable address deduplication (default: True)
+
+    Returns:
+        Deduplication result dictionary if enabled, None otherwise
     """
     logger.info(f"Starting optimized transformation for run_tag: {run_tag}")
 
@@ -112,7 +121,18 @@ def transform_all_optimized(
 
     transform_postal_code_settlement_relationships(db_connection, run_tag)
 
+    logger.info("Core transformation completed successfully")
+
+    # Run deduplication if enabled
+    dedup_result = None
+    if enable_deduplication:
+        logger.info("Running address deduplication")
+        dedup_result = deduplicate_addresses_in_pipeline(
+            db_connection, run_tag, enable_deduplication=True
+        )
+
     logger.info("Optimized transformation completed successfully")
+    return dedup_result
 
 
 def apply_target_schema(db_connection: duckdb.DuckDBPyConnection) -> None:
@@ -166,14 +186,14 @@ def transform_counties(db_connection: duckdb.DuckDBPyConnection, run_tag: str) -
     db_connection.execute(
         """
         INSERT INTO County (ID, CountyCode, CountyName)
-        SELECT 
+        SELECT
             lower(substring(md5(county_code), 1, 16)) as ID,
             county_code,
             MAX(county_name) as CountyName
         FROM staging_korzet
         WHERE run_tag = ?
         GROUP BY county_code
-        ON CONFLICT (ID) DO NOTHING
+        ON CONFLICT (CountyCode) DO NOTHING
     """,
         [run_tag],
     )
@@ -192,15 +212,16 @@ def transform_settlements(
     db_connection.execute(
         """
         INSERT INTO Settlement (ID, SettlementCode, SettlementName, County_ID)
-        SELECT 
-            lower(substring(md5(county_code || '|' || settlement_code), 1, 16)) as ID,
-            settlement_code,
-            MAX(settlement_name) as SettlementName,
-            lower(substring(md5(county_code), 1, 16)) as County_ID
-        FROM staging_korzet
-        WHERE run_tag = ?
-        GROUP BY county_code, settlement_code
-        ON CONFLICT (ID) DO NOTHING
+        SELECT
+            lower(substring(md5(sk.county_code || '|' || sk.settlement_code), 1, 16)) as ID,
+            sk.settlement_code,
+            MAX(sk.settlement_name) as SettlementName,
+            c.ID as County_ID
+        FROM staging_korzet sk
+        JOIN County c ON sk.county_code = c.CountyCode
+        WHERE sk.run_tag = ?
+        GROUP BY sk.county_code, sk.settlement_code, c.ID
+        ON CONFLICT (County_ID, SettlementCode) DO NOTHING
     """,
         [run_tag],
     )
@@ -219,17 +240,18 @@ def transform_national_individual_electoral_districts(
     db_connection.execute(
         """
         INSERT INTO NationalIndividualElectoralDistrict (ID, OEVK, Name, Center, Polygon, County_ID)
-        SELECT 
-            lower(substring(md5(county_code || '|' || oevk_code), 1, 16)) as ID,
-            oevk_code,
-            MAX(settlement_name) || ' ' || oevk_code as Name,
+        SELECT
+            lower(substring(md5(sk.county_code || '|' || sk.oevk_code), 1, 16)) as ID,
+            sk.oevk_code,
+            MAX(sk.settlement_name) || ' ' || sk.oevk_code as Name,
             NULL as Center,  -- Will be populated from JSON if available
             NULL as Polygon, -- Will be populated from JSON if available
-            lower(substring(md5(county_code), 1, 16)) as County_ID
-        FROM staging_korzet
-        WHERE run_tag = ?
-        GROUP BY county_code, oevk_code
-        ON CONFLICT (ID) DO NOTHING
+            c.ID as County_ID
+        FROM staging_korzet sk
+        JOIN County c ON sk.county_code = c.CountyCode
+        WHERE sk.run_tag = ?
+        GROUP BY sk.county_code, sk.oevk_code, c.ID
+        ON CONFLICT (County_ID, OEVK) DO NOTHING
     """,
         [run_tag],
     )
@@ -252,13 +274,13 @@ def transform_postal_codes(
     db_connection.execute(
         """
         INSERT INTO PostalCode (ID, PostalCode)
-        SELECT 
+        SELECT
             hash_postal_code_id(CAST(postal_code AS VARCHAR)) as ID,
             CAST(postal_code AS VARCHAR) as PostalCode
         FROM staging_korzet
         WHERE run_tag = ? AND postal_code IS NOT NULL AND postal_code != 0
         GROUP BY postal_code
-        ON CONFLICT (ID) DO NOTHING
+        ON CONFLICT (PostalCode) DO NOTHING
     """,
         [run_tag],
     )
@@ -279,23 +301,26 @@ def transform_settlement_individual_electoral_districts(
         INSERT INTO SettlementIndividualElectoralDistrict (
             ID, TEVK, Name, County_ID, Settlement_ID, NationalIndividualElectoralDistrict_ID
         )
-        SELECT 
+        SELECT
             hash_tevk_id(
-                county_code, settlement_code, 
-                COALESCE(tevk_code, '-'), oevk_code
+                sk.county_code, sk.settlement_code,
+                COALESCE(sk.tevk_code, '-'), sk.oevk_code
             ) as ID,
-            tevk_code as TEVK,
-            CASE 
-                WHEN tevk_code IS NOT NULL AND tevk_code != '' 
-                THEN MAX(settlement_name) || ' ' || tevk_code
-                ELSE MAX(settlement_name)
+            sk.tevk_code as TEVK,
+            CASE
+                WHEN sk.tevk_code IS NOT NULL AND sk.tevk_code != ''
+                THEN MAX(sk.settlement_name) || ' ' || sk.tevk_code
+                ELSE MAX(sk.settlement_name)
             END as Name,
-            lower(substring(md5(county_code), 1, 16)) as County_ID,
-            lower(substring(md5(county_code || '|' || settlement_code), 1, 16)) as Settlement_ID,
-            lower(substring(md5(county_code || '|' || oevk_code), 1, 16)) as NationalIndividualElectoralDistrict_ID
-        FROM staging_korzet
-        WHERE run_tag = ?
-        GROUP BY county_code, settlement_code, tevk_code, oevk_code
+            c.ID as County_ID,
+            s.ID as Settlement_ID,
+            o.ID as NationalIndividualElectoralDistrict_ID
+        FROM staging_korzet sk
+        JOIN County c ON sk.county_code = c.CountyCode
+        JOIN Settlement s ON sk.county_code = c.CountyCode AND sk.settlement_code = s.SettlementCode
+        JOIN NationalIndividualElectoralDistrict o ON sk.county_code = c.CountyCode AND sk.oevk_code = o.OEVK
+        WHERE sk.run_tag = ?
+        GROUP BY sk.county_code, sk.settlement_code, sk.tevk_code, sk.oevk_code, c.ID, s.ID, o.ID
         ON CONFLICT (ID) DO NOTHING
     """,
         [run_tag],
@@ -320,9 +345,9 @@ def transform_polling_stations(
             ID, PollingStationAddress, SettlementIndividualElectoralDistrict_ID,
             County_ID, Settlement_ID, NationalIndividualElectoralDistrict_ID
         )
-        SELECT 
+        SELECT
             hash_polling_station_id(
-                county_code, settlement_code, oevk_code, 
+                county_code, settlement_code, oevk_code,
                 COALESCE(tevk_code, '-'), polling_station_address
             ) as ID,
             polling_station_address as PollingStationAddress,
@@ -381,26 +406,26 @@ def transform_addresses_optimized(
             NationalIndividualElectoralDistrict_ID
         )
         WITH chunk_data AS (
-            SELECT 
+            SELECT
                 county_code, settlement_code, oevk_code, tevk_code, postal_code,
                 street_name, street_type, house_number, building, staircase,
                 polling_station_address
-            FROM staging_korzet 
+            FROM staging_korzet
             WHERE run_tag = ?
-            ORDER BY county_code, settlement_code, oevk_code, tevk_code, postal_code, 
+            ORDER BY county_code, settlement_code, oevk_code, tevk_code, postal_code,
                      street_name, street_type, house_number, building, staircase
             LIMIT ? OFFSET ?
         ),
             numbered_chunk AS (
-                SELECT 
+                SELECT
                     *,
                     ROW_NUMBER() OVER (
-                        ORDER BY county_code, settlement_code, oevk_code, tevk_code, postal_code, 
+                        ORDER BY county_code, settlement_code, oevk_code, tevk_code, postal_code,
                                  street_name, street_type, house_number, building, staircase
                     ) as row_num
                 FROM chunk_data
             )
-            SELECT 
+            SELECT
                 hash_address_id(
                     county_code,
                     settlement_code,
@@ -413,7 +438,7 @@ def transform_addresses_optimized(
                 ) as ID,
                 row_num as Sequence,
                 ? + row_num - 1 as OriginalOrder,
-                TRIM(CONCAT_WS(' ', street_name, street_type, house_number, 
+                TRIM(CONCAT_WS(' ', street_name, street_type, house_number,
                               COALESCE(building, ''), COALESCE(staircase, ''))) as FullAddress,
                 street_name as PublicSpaceName,
                 COALESCE(street_type, '') as PublicSpaceType,
@@ -632,22 +657,22 @@ def process_chunk_parallel(
                 NationalIndividualElectoralDistrict_ID
             )
             WITH chunk_data AS (
-                SELECT * FROM staging_korzet 
+                SELECT * FROM staging_korzet
                 WHERE run_tag = ?
-                ORDER BY county_code, settlement_code, oevk_code, tevk_code, postal_code, 
+                ORDER BY county_code, settlement_code, oevk_code, tevk_code, postal_code,
                          street_name, street_type, house_number, building, staircase
                 LIMIT ? OFFSET ?
             ),
             numbered_chunk AS (
-                SELECT 
+                SELECT
                     *,
                     ROW_NUMBER() OVER (
-                        ORDER BY county_code, settlement_code, oevk_code, tevk_code, postal_code, 
+                        ORDER BY county_code, settlement_code, oevk_code, tevk_code, postal_code,
                                  street_name, street_type, house_number, building, staircase
                     ) as row_num
                 FROM chunk_data
             )
-            SELECT 
+            SELECT
                 hash_address_id(
                     county_code,
                     settlement_code,
@@ -660,7 +685,7 @@ def process_chunk_parallel(
                 ) as ID,
                 row_num as Sequence,
                 ? + row_num - 1 as OriginalOrder,
-                TRIM(CONCAT_WS(' ', street_name, street_type, house_number, 
+                TRIM(CONCAT_WS(' ', street_name, street_type, house_number,
                               COALESCE(building, ''), COALESCE(staircase, ''))) as FullAddress,
                 street_name as PublicSpaceName,
                 COALESCE(street_type, '') as PublicSpaceType,
@@ -730,7 +755,7 @@ def transform_postal_code_settlement_relationships(
     db_connection.execute(
         """
         INSERT INTO PostalCode_Settlement (ID, PostalCode_ID, Settlement_ID)
-        SELECT 
+        SELECT
             hash_postal_code_settlement_id(
                 hash_postal_code_id(CAST(postal_code AS VARCHAR)),
                 hash_settlement_id(county_code, settlement_code)
@@ -763,3 +788,232 @@ def format_time(seconds: float) -> str:
     else:
         hours = seconds / 3600
         return f"{hours:.1f}h"
+
+
+def deduplicate_addresses_in_pipeline(
+    db_connection: duckdb.DuckDBPyConnection,
+    run_tag: str,
+    enable_deduplication: bool = True,
+) -> Optional[dict]:
+    """
+    Deduplicate addresses and store results in deduplication tables.
+
+    This function runs after address transformation and:
+    1. Extracts addresses from staging data
+    2. Identifies and merges duplicates
+    3. Stores canonical addresses and relationships in database
+    4. Generates deduplication report
+
+    Args:
+        db_connection: Active DuckDB connection
+        run_tag: Run tag to process
+        enable_deduplication: Whether to enable deduplication (default: True)
+
+    Returns:
+        Deduplication report dictionary or None if disabled
+    """
+    if not enable_deduplication:
+        logger.info("Deduplication disabled, skipping")
+        return None
+
+    logger.info("Starting address deduplication in pipeline")
+    start_time = time.time()
+
+    # Get configuration
+    config = get_config()
+    dedup_config = config.get_deduplication_settings()
+
+    try:
+        # Step 1: Extract addresses from staging data
+        logger.info("Extracting addresses from staging data")
+        addresses_query = """
+            SELECT
+                hash_address_id(
+                    county_code,
+                    COALESCE(settlement_code, ''),
+                    street_name,
+                    COALESCE(street_type, ''),
+                    house_number,
+                    COALESCE(building, ''),
+                    COALESCE(staircase, ''),
+                    CAST(postal_code AS VARCHAR)
+                ) as address_id,
+                county_code,
+                settlement_name,
+                street_name,
+                COALESCE(street_type, '') as street_type,
+                house_number,
+                building,
+                staircase,
+                CASE
+                    WHEN accessible = 'I' THEN TRUE
+                    ELSE FALSE
+                END as accessibility_flag,
+                postal_code as pir_code,
+                hash_polling_station_id(
+                    county_code, COALESCE(settlement_code, ''), oevk_code,
+                    COALESCE(tevk_code, '-'), polling_station_address
+                ) as polling_station_id
+            FROM staging_korzet
+            WHERE run_tag = ?
+        """
+
+        # Execute query and convert to Polars DataFrame
+        # Get column names first
+        result = db_connection.execute(addresses_query, [run_tag])
+        columns = [desc[0] for desc in result.description]
+        rows = result.fetchall()
+
+        # Convert to dictionary format for Polars
+        data = {col: [row[i] for row in rows] for i, col in enumerate(columns)}
+        addresses_df = pl.DataFrame(data)
+
+        logger.info(f"Extracted {len(addresses_df)} addresses for deduplication")
+
+        # Step 2: Run deduplication
+        deduplicator = AddressDeduplicator(
+            seed=dedup_config.get("hash_seed", 20241012),
+            enable_logging=dedup_config.get("enable_logging", True),
+        )
+
+        dedup_result = deduplicator.deduplicate_addresses(
+            addresses_df, generate_report=dedup_config.get("generate_reports", True)
+        )
+
+        # Step 3: Store results in database
+        logger.info("Storing deduplication results in database")
+
+        # Store canonical addresses
+        canonical_addresses = dedup_result["canonical_addresses"]
+
+        db_connection.execute("DELETE FROM CanonicalAddress WHERE 1=1")
+
+        # Register Polars DataFrame with DuckDB and insert
+        db_connection.register("canonical_temp", canonical_addresses)
+        db_connection.execute("""
+            INSERT INTO CanonicalAddress (ID, CountyCode, SettlementName, StreetName, HouseNumber, FullAddress, AccessibilityFlag)
+            SELECT
+                CAST(canonical_address_id AS VARCHAR) as ID,
+                county_code as CountyCode,
+                settlement_name as SettlementName,
+                street_name as StreetName,
+                house_number as HouseNumber,
+                full_address as FullAddress,
+                CASE
+                    WHEN accessibility_flag THEN 'I'
+                    ELSE 'N'
+                END as AccessibilityFlag
+            FROM canonical_temp
+            ON CONFLICT (CountyCode, SettlementName, FullAddress) DO UPDATE SET
+                AccessibilityFlag = EXCLUDED.AccessibilityFlag
+        """)
+        db_connection.unregister("canonical_temp")
+
+        canonical_count = len(canonical_addresses)
+        logger.info(f"Stored {canonical_count} canonical addresses")
+
+        # Store address mapping
+        address_mapping = dedup_result["address_mapping"]
+
+        db_connection.execute("DELETE FROM AddressMapping WHERE 1=1")
+
+        db_connection.register("mapping_temp", address_mapping)
+        db_connection.execute("""
+            INSERT INTO AddressMapping (ID, OriginalAddressID, CanonicalAddressID, MappingType)
+            SELECT
+                lower(substring(md5(CAST(original_address_id AS VARCHAR) || '|' || CAST(canonical_address_id AS VARCHAR)), 1, 16)) as ID,
+                CAST(original_address_id AS VARCHAR) as OriginalAddressID,
+                CAST(canonical_address_id AS VARCHAR) as CanonicalAddressID,
+                'deduplication' as MappingType
+            FROM mapping_temp
+            ON CONFLICT (OriginalAddressID, CanonicalAddressID) DO NOTHING
+        """)
+        db_connection.unregister("mapping_temp")
+
+        logger.info(f"Stored {len(address_mapping)} address mappings")
+
+        # Store polling station relationships
+        polling_stations = dedup_result["address_polling_stations"]
+
+        db_connection.execute("DELETE FROM AddressPollingStations WHERE 1=1")
+
+        db_connection.register("polling_temp", polling_stations)
+        db_connection.execute("""
+            INSERT INTO AddressPollingStations (ID, CanonicalAddressID, PollingStationID)
+            SELECT
+                lower(substring(md5(CAST(canonical_address_id AS VARCHAR) || '|' || polling_station_id), 1, 16)) as ID,
+                CAST(canonical_address_id AS VARCHAR) as CanonicalAddressID,
+                polling_station_id as PollingStationID
+            FROM polling_temp
+            ON CONFLICT (CanonicalAddressID, PollingStationID) DO NOTHING
+        """)
+        db_connection.unregister("polling_temp")
+
+        logger.info(f"Stored {len(polling_stations)} polling station relationships")
+
+        # Store PIR codes
+        pir_codes = dedup_result["address_pir_codes"]
+
+        db_connection.execute("DELETE FROM AddressPIRCodes WHERE 1=1")
+
+        db_connection.register("pir_temp", pir_codes)
+        db_connection.execute("""
+            INSERT INTO AddressPIRCodes (ID, CanonicalAddressID, PIRCode)
+            SELECT
+                lower(substring(md5(CAST(canonical_address_id AS VARCHAR) || '|' || pir_code), 1, 16)) as ID,
+                CAST(canonical_address_id AS VARCHAR) as CanonicalAddressID,
+                pir_code as PIRCode
+            FROM pir_temp
+        """)
+        db_connection.unregister("pir_temp")
+
+        logger.info(f"Stored {len(pir_codes)} PIR code relationships")
+
+        # Step 4: Store deduplication report (if generated)
+        if "deduplication_report" in dedup_result:
+            report = dedup_result["deduplication_report"]
+
+            db_connection.execute(
+                "DELETE FROM DeduplicationReport WHERE RunID = ?", [report.run_id]
+            )
+            db_connection.execute(
+                """
+                INSERT INTO DeduplicationReport
+                (ID, RunID, TotalAddresses, DuplicatesFound, CanonicalAddressesCreated,
+                 ProcessingTimeMs, Status, ErrorMessage)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+                [
+                    report.id,
+                    report.run_id,
+                    report.total_addresses,
+                    report.duplicates_found,
+                    report.canonical_addresses_created,
+                    report.processing_time_ms,
+                    report.status,
+                    report.error_message,
+                ],
+            )
+
+            logger.info(f"Stored deduplication report: {report.run_id}")
+
+        # Log summary
+        processing_time = time.time() - start_time
+        original_count = len(addresses_df)
+        deduplication_rate = (
+            ((original_count - canonical_count) / original_count * 100)
+            if original_count > 0
+            else 0
+        )
+
+        logger.info(
+            f"Deduplication complete in {format_time(processing_time)}: "
+            f"{original_count:,} addresses → {canonical_count:,} canonical "
+            f"({deduplication_rate:.1f}% reduction)"
+        )
+
+        return dedup_result
+
+    except Exception as e:
+        logger.error(f"Deduplication failed: {str(e)}", exc_info=True)
+        raise
