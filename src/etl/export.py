@@ -1,8 +1,11 @@
 """Export logic for generating CSV files from target tables."""
 
 import os
+import sys
 import uuid
 import csv
+import json
+import shutil
 import duckdb
 
 from src.utils.pipeline_logging import get_logger
@@ -401,18 +404,28 @@ def export_public_space_tables(
     logger.info("Public space table export completed")
 
 
-def create_release_symlinks(export_dir: str, run_tag: str, db_path: str) -> None:
-    """Create symlinks for release system compatibility.
+def create_release_symlinks(
+    export_dir: str, run_tag: str, db_path: str, use_copies: bool = None
+) -> None:
+    """Create symlinks or copies for release system compatibility.
 
     The release validation system expects specific file names without timestamps.
-    This function creates symlinks from the timestamped files to the expected names.
+    This function creates symlinks (Unix) or copies (Windows) from timestamped files.
 
     Args:
         export_dir: The directory containing exported CSV files.
         run_tag: The run tag used in filenames.
         db_path: Path to the database file.
+        use_copies: If True, copy files instead of symlinks. If None, auto-detect (Windows=copy, Unix=symlink).
     """
-    logger.info("Creating release symlinks for validation compatibility")
+    # Auto-detect platform if not specified
+    if use_copies is None:
+        use_copies = sys.platform.startswith("win")
+
+    method = "copies" if use_copies else "symlinks"
+    logger.info(
+        f"Creating release {method} for validation compatibility (platform: {sys.platform})"
+    )
 
     # Required files for release validation
     # Note: addresses.csv points to the Address directory (not a file)
@@ -426,13 +439,14 @@ def create_release_symlinks(export_dir: str, run_tag: str, db_path: str) -> None
         "database.duckdb": db_path,
     }
 
-    symlinks_created = 0
+    created_count = 0
+    manifest = {}  # Track source -> target mapping
 
-    for symlink_name, source_file in required_files.items():
-        symlink_path = os.path.join(export_dir, symlink_name)
+    for target_name, source_file in required_files.items():
+        target_path = os.path.join(export_dir, target_name)
 
         # For database file, use the actual database path
-        if symlink_name == "database.duckdb":
+        if target_name == "database.duckdb":
             source_path = source_file
             # Use relative path for database symlink
             source_relative = os.path.relpath(source_path, export_dir)
@@ -441,26 +455,57 @@ def create_release_symlinks(export_dir: str, run_tag: str, db_path: str) -> None
             # Use relative path for CSV files (just the filename)
             source_relative = source_file
 
-        # Remove existing symlink if it exists
-        if os.path.exists(symlink_path) or os.path.islink(symlink_path):
+        # Remove existing file/symlink/directory if it exists
+        if os.path.exists(target_path) or os.path.islink(target_path):
             try:
-                os.remove(symlink_path)
-                logger.debug(f"Removed existing symlink: {symlink_path}")
+                if os.path.isdir(target_path) and not os.path.islink(target_path):
+                    shutil.rmtree(target_path)
+                else:
+                    os.remove(target_path)
+                logger.debug(f"Removed existing target: {target_path}")
             except OSError as e:
-                logger.warning(f"Failed to remove existing symlink {symlink_path}: {e}")
+                logger.warning(f"Failed to remove existing target {target_path}: {e}")
 
-        # Create symlink if source file exists
+        # Create symlink or copy if source exists
         if os.path.exists(source_path):
             try:
-                # Use relative paths for symlinks to make them portable
-                os.symlink(source_relative, symlink_path)
-                logger.info(f"Created symlink: {symlink_name} -> {source_relative}")
-                symlinks_created += 1
-            except OSError as e:
-                logger.error(f"Failed to create symlink {symlink_name}: {e}")
-        else:
-            logger.warning(
-                f"Source file not found for symlink {symlink_name}: {source_path}"
-            )
+                if use_copies:
+                    # Copy files (Windows-compatible)
+                    if os.path.isdir(source_path):
+                        # Copy directory
+                        shutil.copytree(source_path, target_path)
+                        logger.info(
+                            f"Copied directory: {target_name} <- {source_relative}"
+                        )
+                    else:
+                        # Copy file
+                        shutil.copy2(source_path, target_path)
+                        logger.info(f"Copied file: {target_name} <- {source_relative}")
+                else:
+                    # Create symlink (Unix)
+                    os.symlink(source_relative, target_path)
+                    logger.info(f"Created symlink: {target_name} -> {source_relative}")
 
-    logger.info(f"Created {symlinks_created} symlinks for release compatibility")
+                created_count += 1
+                manifest[target_name] = source_relative
+            except (OSError, IOError) as e:
+                logger.error(f"Failed to create {method[:-1]} for {target_name}: {e}")
+        else:
+            logger.warning(f"Source file not found for {target_name}: {source_path}")
+
+    # Create manifest file for tracking
+    manifest_path = os.path.join(export_dir, "export_manifest.json")
+    try:
+        manifest_data = {
+            "run_tag": run_tag,
+            "method": method,
+            "platform": sys.platform,
+            "files": manifest,
+        }
+        with open(manifest_path, "w") as f:
+            json.dump(manifest_data, f, indent=2)
+        logger.info(f"Created manifest file: {manifest_path}")
+    except Exception as e:
+        logger.warning(f"Failed to create manifest file: {e}")
+
+    logger.info(f"Created {created_count} {method} for release compatibility")

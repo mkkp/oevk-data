@@ -109,6 +109,30 @@ python -m src.cli run --no-deduplication
 python -m src.cli run --help
 ```
 
+### Windows Compatibility
+
+The export system supports both Unix symlinks and Windows-compatible file copies:
+
+```bash
+# Auto-detection (default behavior)
+# - Windows: Creates file copies
+# - Unix/macOS: Creates symlinks
+python -m src.cli export
+
+# Force file copies (Windows-compatible, uses more disk space)
+python -m src.cli export --use-copies
+
+# Force symlinks (Unix/macOS only, saves disk space)
+python -m src.cli export --use-symlinks
+```
+
+**How it works:**
+- **Symlinks (Unix/macOS)**: Creates symbolic links from canonical names (`Addresses`, `Settlements.csv`) to timestamped files
+- **Copies (Windows)**: Copies timestamped files to canonical names for Windows compatibility
+- **Manifest file**: Creates `export_manifest.json` tracking the export method and file mappings
+
+**Note**: The Addresses directory contains 3,177 CSV files (~100MB). Using `--use-copies` will duplicate this data.
+
 ### Release Workflow
 
 The project includes a comprehensive release workflow for publishing processed data to GitHub releases:

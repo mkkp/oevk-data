@@ -261,6 +261,16 @@ Examples:
         action="store_true",
         help="Export only addresses, skip entity tables (default: export all)",
     )
+    export_parser.add_argument(
+        "--use-copies",
+        action="store_true",
+        help="Copy files instead of creating symlinks (Windows-compatible, auto-detected by default)",
+    )
+    export_parser.add_argument(
+        "--use-symlinks",
+        action="store_true",
+        help="Create symlinks instead of copying files (Unix-only, auto-detected by default)",
+    )
 
     # Release commands (if available)
     if RELEASE_AVAILABLE:
@@ -526,8 +536,16 @@ def export_data(args):
                     "Skipping original address export (use --export-original-addresses to enable)"
                 )
 
-        # Create release symlinks for validation compatibility
-        create_release_symlinks(args.output_dir, run_tag, args.db_path)
+        # Create release symlinks/copies for validation compatibility
+        # Determine method: explicit flag overrides auto-detection
+        use_copies = None
+        if hasattr(args, "use_copies") and args.use_copies:
+            use_copies = True
+        elif hasattr(args, "use_symlinks") and args.use_symlinks:
+            use_copies = False
+        create_release_symlinks(
+            args.output_dir, run_tag, args.db_path, use_copies=use_copies
+        )
 
         conn.close()
         logger.info("✓ Export completed successfully")
@@ -705,8 +723,16 @@ def run_pipeline(args):
                     "Skipping original address export (use --export-original-addresses to enable)"
                 )
 
-            # Create release symlinks for validation compatibility
-            create_release_symlinks(args.output_dir, run_tag, args.db_path)
+            # Create release symlinks/copies for validation compatibility
+            # Determine method: explicit flag overrides auto-detection
+            use_copies = None
+            if hasattr(args, "use_copies") and args.use_copies:
+                use_copies = True
+            elif hasattr(args, "use_symlinks") and args.use_symlinks:
+                use_copies = False
+            create_release_symlinks(
+                args.output_dir, run_tag, args.db_path, use_copies=use_copies
+            )
 
             metrics.log_step_completion("export", row_count=total_rows)
 
