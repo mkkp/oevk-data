@@ -645,10 +645,10 @@ flowchart TD
     end
     
     subgraph I [CSV Files]
-        I1[Entity CSVs<br/>County, Settlement, etc.]
-        I2[Address_{code}_{name}.csv<br/>Canonical deduplicated]
-        I3[OriginalAddress_{code}_{name}.csv<br/>With canonical refs]
-        I4[Public Space CSVs<br/>Names, Types, Relationships]
+        I1["Entity CSVs<br/>County, Settlement, etc."]
+        I2["Address files<br/>Canonical deduplicated"]
+        I3["OriginalAddress files<br/>With canonical refs"]
+        I4["Public Space CSVs<br/>Names, Types, Relationships"]
     end
     
     D1 --> G1
