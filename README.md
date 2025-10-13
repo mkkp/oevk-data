@@ -730,7 +730,7 @@ This section shows how source CSV columns map to database tables and columns.
 |----------------------|---------------------|-----------------|---------------|----------------|
 | **County & Settlement** | | | | |
 | Vármegye kód | CountyCode | County | CountyCode | Direct mapping |
-| Vármegye kód | County | ID | xxhash64(CountyCode) |
+| Vármegye kód | CountyCode | County | ID | xxhash64(CountyCode) |
 | Vármegye | CountyName | County | CountyName | Direct mapping |
 | Település kód | SettlementCode | Settlement | SettlementCode | Direct mapping |
 | Település kód | SettlementCode | Settlement | ID | xxhash64(CountyCode\|SettlementCode) |
