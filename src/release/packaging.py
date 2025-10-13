@@ -60,7 +60,7 @@ class FilePackager:
         csv_files = {}
 
         # First, add files from symlinks (these are the latest versions)
-        symlink_files = ["settlements.csv", "counties.csv"]
+        symlink_files = ["Settlements.csv", "Counties.csv"]
         for symlink_file in symlink_files:
             symlink_path = data_path / symlink_file
             if symlink_path.exists() and symlink_path.is_symlink():

@@ -417,9 +417,9 @@ def create_release_symlinks(export_dir: str, run_tag: str, db_path: str) -> None
     # Required files for release validation
     # Note: addresses.csv points to the Address directory (not a file)
     required_files = {
-        "addresses": f"{run_tag}_Address",  # Directory symlink
-        "settlements.csv": f"{run_tag}_Settlement.csv",
-        "counties.csv": f"{run_tag}_County.csv",
+        "Addresses": f"{run_tag}_Address",  # Directory symlink
+        "Settlements.csv": f"{run_tag}_Settlement.csv",
+        "Counties.csv": f"{run_tag}_County.csv",
         "PublicSpaceName.csv": f"{run_tag}_PublicSpaceName.csv",
         "PublicSpaceType.csv": f"{run_tag}_PublicSpaceType.csv",
         "SettlementPublicSpaces.csv": f"{run_tag}_SettlementPublicSpaces.csv",

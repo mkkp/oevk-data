@@ -231,8 +231,8 @@ Each release creates two main artifacts:
    - `{run_tag}_Address/` - Directory containing address files split by settlement:
      - `Address_001_Aba.csv` - **Canonical deduplicated addresses** (UUID v3 format)
      - `OriginalAddress_001_Aba.csv` - All original addresses with canonical references
-   - `settlements.csv` - Settlement information
-   - `counties.csv` - County data
+   - `Settlements.csv` - Settlement information
+   - `Counties.csv` - County data
    - `polling_stations.csv` - Polling station details
    - `electoral_districts.csv` - Electoral district information
    - `PublicSpaceName.csv` - 25,117 unique public space names
