@@ -983,7 +983,7 @@ The pipeline automatically extracts public space entities from addresses:
 - **Public Space Data**: 25,117 names, 148 types, 122,524 relationships extracted
 - **Export Performance**: 2.6 minutes for 3.3M addresses (17x faster than baseline)
 
-See [PERFORMANCE_BENCHMARKS.md](PERFORMANCE_BENCHMARKS.md) for detailed performance analysis.
+See [PERFORMANCE_BENCHMARKS.md](docs/PERFORMANCE_BENCHMARKS.md) for detailed performance analysis.
 
 ## Troubleshooting
 
