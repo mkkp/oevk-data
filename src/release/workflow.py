@@ -62,7 +62,7 @@ class ReleaseWorkflow:
 
         # Check for all required files in exports directory
         required_files = [
-            "addresses.csv",
+            "addresses",  # Directory containing per-settlement CSV files
             "settlements.csv",
             "counties.csv",
             "database.duckdb",

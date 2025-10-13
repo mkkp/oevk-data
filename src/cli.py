@@ -3,6 +3,8 @@
 import argparse
 import datetime
 import os
+import re
+import subprocess
 import sys
 import time
 import glob
@@ -42,6 +44,98 @@ except ImportError:
     RELEASE_AVAILABLE = False
 
 logger = get_logger(__name__)
+
+
+def get_git_repo_info():
+    """
+    Extract GitHub repository owner and name from git remote URL.
+
+    Returns:
+        tuple: (owner, repo_name) or (None, None) if not found
+    """
+    try:
+        result = subprocess.run(
+            ["git", "config", "--get", "remote.origin.url"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        remote_url = result.stdout.strip()
+
+        # Parse GitHub URL patterns:
+        # - git@github.com:owner/repo.git
+        # - https://github.com/owner/repo.git
+        # - https://github.com/owner/repo
+
+        # SSH format: git@github.com:owner/repo.git
+        ssh_match = re.match(r"git@github\.com:([^/]+)/(.+?)(?:\.git)?$", remote_url)
+        if ssh_match:
+            return ssh_match.group(1), ssh_match.group(2)
+
+        # HTTPS format: https://github.com/owner/repo.git or https://github.com/owner/repo
+        https_match = re.match(
+            r"https://github\.com/([^/]+)/(.+?)(?:\.git)?$", remote_url
+        )
+        if https_match:
+            return https_match.group(1), https_match.group(2)
+
+        logger.warning(f"Could not parse GitHub URL: {remote_url}")
+        return None, None
+    except subprocess.CalledProcessError:
+        logger.warning("Could not get git remote URL")
+        return None, None
+    except Exception as e:
+        logger.warning(f"Error getting git repo info: {e}")
+        return None, None
+
+
+def get_latest_export_timestamp(exports_dir="exports"):
+    """
+    Find the latest export timestamp from the exports directory.
+
+    Args:
+        exports_dir: Path to exports directory
+
+    Returns:
+        str: Latest timestamp (YYYYMMDD_HHMMSS) or None if not found
+    """
+    try:
+        # Look for timestamped CSV files: YYYYMMDD_HHMMSS_*.csv
+        csv_files = glob.glob(os.path.join(exports_dir, "*_*.csv"))
+
+        # Also look for timestamped Address directories: YYYYMMDD_HHMMSS_Address
+        address_dirs = glob.glob(os.path.join(exports_dir, "*_Address"))
+
+        timestamps = set()
+
+        # Extract timestamps from CSV files
+        for csv_file in csv_files:
+            basename = os.path.basename(csv_file)
+            # Match YYYYMMDD_HHMMSS pattern
+            match = re.match(r"(\d{8}_\d{6})_", basename)
+            if match:
+                timestamps.add(match.group(1))
+
+        # Extract timestamps from Address directories
+        for addr_dir in address_dirs:
+            basename = os.path.basename(addr_dir)
+            # Match YYYYMMDD_HHMMSS_Address pattern
+            match = re.match(r"(\d{8}_\d{6})_Address$", basename)
+            if match:
+                timestamps.add(match.group(1))
+
+        if not timestamps:
+            logger.warning(f"No export timestamps found in {exports_dir}")
+            return None
+
+        # Return the latest timestamp (lexicographically sorted, which works for YYYYMMDD_HHMMSS)
+        latest = max(timestamps)
+        logger.info(f"Found latest export timestamp: {latest}")
+        return latest
+
+    except Exception as e:
+        logger.warning(f"Error finding latest export timestamp: {e}")
+        return None
 
 
 def main():
@@ -170,7 +264,40 @@ Examples:
 
     # Release commands (if available)
     if RELEASE_AVAILABLE:
-        release_parser = subparsers.add_parser("release", help="Manage data releases")
+        release_parser = subparsers.add_parser(
+            "release",
+            help="Manage data releases (defaults to creating release with auto-detected repo and latest export)",
+        )
+
+        # Add optional flags that apply to default behavior
+        release_parser.add_argument(
+            "--staging-dir",
+            default="data/staging",
+            help="Staging directory (default: data/staging)",
+        )
+        release_parser.add_argument(
+            "--exports-dir",
+            default="exports",
+            help="Exports directory (default: exports)",
+        )
+        release_parser.add_argument(
+            "--github-token", help="GitHub token (default: GITHUB_TOKEN env var)"
+        )
+        release_parser.add_argument(
+            "--draft", action="store_true", help="Create as draft release"
+        )
+        release_parser.add_argument(
+            "--prerelease", action="store_true", help="Create as prerelease"
+        )
+        release_parser.add_argument(
+            "--force", action="store_true", help="Force overwrite existing release"
+        )
+        release_parser.add_argument(
+            "--skip-upload",
+            action="store_true",
+            help="Skip GitHub upload (create packages only)",
+        )
+
         release_subparsers = release_parser.add_subparsers(
             dest="release_command", help="Release command"
         )
@@ -621,6 +748,66 @@ def handle_release_command(args):
         sys.exit(1)
 
     try:
+        # If no subcommand provided, default to create with smart defaults
+        if args.release_command is None:
+            logger.info(
+                "No release subcommand specified, defaulting to 'create' with auto-detection"
+            )
+
+            # Auto-detect git repository
+            repo_owner, repo_name = get_git_repo_info()
+            if not repo_owner or not repo_name:
+                print(
+                    "❌ Error: Could not auto-detect GitHub repository from git remote"
+                )
+                print(
+                    "Please ensure you're in a git repository with a GitHub remote configured"
+                )
+                print(
+                    "Or use: python src/cli.py release create --repo-owner <owner> --repo-name <name>"
+                )
+                sys.exit(1)
+
+            logger.info(f"Detected repository: {repo_owner}/{repo_name}")
+
+            # Find latest export timestamp
+            exports_dir = getattr(args, "exports_dir", "exports")
+            timestamp = get_latest_export_timestamp(exports_dir)
+            if not timestamp:
+                print(f"❌ Error: No export files found in {exports_dir}")
+                print(
+                    "Please run 'python src/cli.py export' first to generate export files"
+                )
+                sys.exit(1)
+
+            # Use timestamp as tag (format: v20251013_195208)
+            tag = f"v{timestamp}"
+            logger.info(f"Using tag from latest export: {tag}")
+
+            # Create release with detected values
+            workflow = ReleaseWorkflow(
+                repo_owner=repo_owner,
+                repo_name=repo_name,
+                github_token=getattr(args, "github_token", None),
+                staging_dir=getattr(args, "staging_dir", "data/staging"),
+                exports_dir=exports_dir,
+            )
+
+            result = workflow.execute_full_release(
+                tag=tag,
+                draft=getattr(args, "draft", False),
+                prerelease=getattr(args, "prerelease", False),
+                force=getattr(args, "force", False),
+                skip_upload=getattr(args, "skip_upload", False),
+            )
+
+            print("=== RELEASE CREATED SUCCESSFULLY ===")
+            print(f"Release URL: {result['release'].get('html_url')}")
+            print(f"Release Tag: {result['package']['release_tag']}")
+            print(f"Repository: {repo_owner}/{repo_name}")
+            print(f"Artifacts: {len(result.get('artifacts', []))}")
+            return
+
         if args.release_command == "export":
             # Handle release export - same as standalone export but with cleaner output
             logger.info("Exporting data for release")
@@ -745,7 +932,9 @@ def handle_release_command(args):
                 print(f"   URL: {release.get('html_url')}")
 
         else:
+            # This should not be reached due to the None check at the start
             print(f"Unknown release command: {args.release_command}")
+            print("Available commands: export, validate, create, status, history")
             sys.exit(1)
 
     except Exception as e:
