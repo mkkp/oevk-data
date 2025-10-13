@@ -702,6 +702,144 @@ flowchart TD
 - Each public space has a name and type (utca, tér, etc.)
 - Settlements can have multiple public spaces, and public spaces can appear in multiple settlements
 
+## CSV Column Mapping
+
+This section shows how source CSV columns map to database tables and columns.
+
+### Source Data Files
+
+1. **oevk.json** - OEVK boundary data (108 records)
+2. **Korzet_allomany_orszagos.zip** → CSV file - Address data (3.3M+ records)
+
+### CSV Column to Database Table Mapping
+
+#### From oevk.json
+
+| Source Field | Target Table | Target Column | Transformation |
+|--------------|--------------|---------------|----------------|
+| `maz` | County | CountyCode | Direct mapping |
+| `maz` | NationalIndividualElectoralDistrict | County_ID | xxhash64(maz) |
+| `evk` | NationalIndividualElectoralDistrict | OEVK | Direct mapping |
+| `centrum` | NationalIndividualElectoralDistrict | Center | Direct mapping (stored as text "lat lon") |
+| `poligon` | NationalIndividualElectoralDistrict | Polygon | Direct mapping (stored as text coordinates) |
+| `maz` + `evk` | NationalIndividualElectoralDistrict | ID | xxhash64(maz\|evk) |
+
+#### From Korzet_allomany_orszagos.csv
+
+| Hungarian Column Name | English Translation | Target Table(s) | Target Column | Transformation |
+|----------------------|---------------------|-----------------|---------------|----------------|
+| **County & Settlement** | | | | |
+| Vármegye kód | CountyCode | County | CountyCode | Direct mapping |
+| Vármegye kód | County | ID | xxhash64(CountyCode) |
+| Vármegye | CountyName | County | CountyName | Direct mapping |
+| Település kód | SettlementCode | Settlement | SettlementCode | Direct mapping |
+| Település kód | SettlementCode | Settlement | ID | xxhash64(CountyCode\|SettlementCode) |
+| Település | SettlementName | Settlement | SettlementName | Direct mapping |
+| Vármegye kód | CountyCode | Settlement | County_ID | xxhash64(CountyCode) |
+| **Electoral Districts** | | | | |
+| OEVK | OEVK Code | NationalIndividualElectoralDistrict | OEVK | Direct mapping |
+| OEVK | OEVK Code | NationalIndividualElectoralDistrict | Name | Derived: Settlement.SettlementName + " " + OEVK |
+| TEVK | TEVK Code | SettlementIndividualElectoralDistrict | TEVK | Direct mapping (can be NULL) |
+| TEVK | TEVK Code | SettlementIndividualElectoralDistrict | Name | Derived: Settlement.SettlementName [+ " " + TEVK if not NULL] |
+| OEVK + TEVK | - | SettlementIndividualElectoralDistrict | ID | xxhash64(CountyCode\|SettlementCode\|COALESCE(TEVK,'-')\|OEVK) |
+| **Polling Stations** | | | | |
+| Szavazókör | PollingStationCode | PollingStation | - | Technical ID (not stored) |
+| Szavazókör cím | PollingStationAddress | PollingStation | PollingStationAddress | Direct mapping |
+| Szavazókör cím | PollingStationAddress | PollingStation | ID | xxhash64(CountyCode\|SettlementCode\|OEVK\|COALESCE(TEVK,'-')\|PollingStationAddress) |
+| Számlálásra kijelölt | CountingFlag | - | - | Audit only (not stored in target) |
+| Akadálymentesített | AccessibilityFlag | CanonicalAddress | AccessibilityFlag | Used in deduplication (TRUE prioritized) |
+| **Postal Codes** | | | | |
+| PIR | PostalCode | PostalCode | PostalCode | Direct mapping |
+| PIR | PostalCode | PostalCode | ID | xxhash64(PostalCode) |
+| PIR | PostalCode | PostalCode_Settlement | PostalCode_ID | xxhash64(PostalCode) |
+| PIR | PostalCode | Address | PostalCode_ID | xxhash64(PostalCode) |
+| **Address Components** | | | | |
+| Közterület név | PublicSpaceName | PublicSpaceName | PublicSpaceName | Extracted and normalized (uppercase) |
+| Közterület név | PublicSpaceName | PublicSpaceName | ID | xxhash64(PublicSpaceName) |
+| Közterület név | PublicSpaceName | Address | PublicSpaceName | Direct mapping |
+| Közterület név | PublicSpaceName | CanonicalAddress | StreetName | Used in canonical ID generation |
+| Közterület jelleg | PublicSpaceType | PublicSpaceType | PublicSpaceType | Extracted and normalized (e.g., "utca", "tér", "út") |
+| Közterület jelleg | PublicSpaceType | PublicSpaceType | ID | xxhash64(PublicSpaceType) |
+| Közterület jelleg | PublicSpaceType | Address | PublicSpaceType | Direct mapping |
+| Házszám | HouseNumber | Address | HouseNumber | Direct mapping with leading zeros |
+| Házszám | HouseNumber | CanonicalAddress | HouseNumber | Cleaned: leading zeros removed, ranges preserved |
+| Épület | Building | Address | Building | Direct mapping |
+| Épület | Building | CanonicalAddress | - | Used in FullAddress formatting |
+| Lépcsőház | Staircase | Address | Staircase | Direct mapping |
+| Lépcsőház | Staircase | CanonicalAddress | - | Used in FullAddress formatting (numeric → Roman) |
+| Kapukód | GateCode | - | - | Excluded from deduplication and canonical address |
+| **Derived Fields** | | | | |
+| Multiple columns | - | Address | FullAddress | Concatenated: PublicSpaceName + PublicSpaceType + HouseNumber + Building + Staircase |
+| Multiple columns | - | Address | Sequence | Row number within polling station |
+| Multiple columns | - | Address | OriginalOrder | Global loading order from source CSV |
+| Multiple columns | - | Address | ID | xxhash64(all address components) |
+| Multiple columns | - | CanonicalAddress | FullAddress | Formatted Hungarian address (e.g., "Körtöltés utca 1/D.") |
+| Multiple columns | - | CanonicalAddress | ID | xxhash64(CountyCode\|SettlementName\|FullAddress) |
+
+### Junction/Relationship Tables
+
+| Table | Source Columns | Mapping Logic |
+|-------|----------------|---------------|
+| **PostalCode_Settlement** | PIR + Település kód | Links postal codes to settlements (n:m relationship) |
+| **SettlementPublicSpaces** | Település kód + Közterület név + Közterület jelleg | Links settlements to public spaces (n:m relationship) |
+| **AddressMapping** | Address.ID + CanonicalAddress.ID | Maps original addresses to canonical deduplicated addresses |
+| **AddressPollingStations** | CanonicalAddress.ID + PollingStation.ID | Preserves all polling station assignments for canonical addresses |
+| **AddressPIRCodes** | CanonicalAddress.ID + PIR | Preserves all postal codes for canonical addresses |
+
+### Deduplication Process
+
+The deduplication process identifies duplicate addresses based on formatted Hungarian addresses:
+
+1. **Input**: Raw address components (Közterület név, Közterület jelleg, Házszám, Épület, Lépcsőház)
+2. **Formatting Rules**:
+   - Remove leading zeros from house numbers: `"000001"` → `"1"`
+   - Handle ranges: `"000001-00005"` → `"1-5"`
+   - Convert numeric staircases to Roman numerals: `"0001"` → `"I"`
+   - Apply Hungarian address format: `"{Street Name} {Street Type} {House Number}. {Building}. épület {Staircase}. lépcsőház"`
+3. **Canonical ID**: xxhash64(CountyCode | SettlementName | FullAddress)
+4. **Relationship Preservation**: All polling stations and PIR codes are preserved through junction tables
+
+**Example**:
+- Input: `"Körtöltés", "utca", "000001", "D", ""`
+- Formatted: `"Körtöltés utca 1/D."`
+- These three source records become ONE canonical address:
+  - House: `"000001"`, Building: `"D"`, Staircase: `""`
+  - House: `"000001"`, Building: `""`, Staircase: `"D"`
+  - House: `"000001/D"`, Building: `""`, Staircase: `""`
+
+### ID Generation Strategy
+
+All IDs use **xxhash64** for deterministic, collision-resistant identifiers:
+
+| Table | ID Components | Example |
+|-------|--------------|---------|
+| County | CountyCode | xxhash64("01") |
+| Settlement | CountyCode \| SettlementCode | xxhash64("01\|001") |
+| NationalIndividualElectoralDistrict | CountyCode \| OEVK | xxhash64("01\|01") |
+| SettlementIndividualElectoralDistrict | CountyCode \| SettlementCode \| TEVK \| OEVK | xxhash64("01\|001\|-\|01") |
+| PostalCode | PostalCode | xxhash64("1014") |
+| PollingStation | CountyCode \| SettlementCode \| OEVK \| TEVK \| Address | xxhash64("01\|001\|01\|-\|Úri utca 38...") |
+| Address | All address components | xxhash64(CountyCode\|SettlementCode\|...\|HouseNumber\|Building\|Staircase) |
+| CanonicalAddress | CountyCode \| SettlementName \| FullAddress | xxhash64("01\|Budapest I\|Anna utca 1.") |
+| PublicSpaceName | PublicSpaceName | xxhash64("Kossuth Lajos") |
+| PublicSpaceType | PublicSpaceType | xxhash64("utca") |
+
+**Note**: NULL values in TEVK are replaced with `"-"` for consistent hashing.
+
+### Export Format
+
+Exported CSV files use **UUID v3** with 'oevk.hu' namespace for global uniqueness:
+
+```python
+OEVK_NAMESPACE = uuid.uuid3(uuid.NAMESPACE_DNS, "oevk.hu")
+exported_id = uuid.uuid3(OEVK_NAMESPACE, internal_xxhash64_id)
+```
+
+This ensures:
+- ✅ Global uniqueness across systems
+- ✅ Deterministic conversion (same input → same UUID)
+- ✅ Standard UUID format compatibility
+
 ### Deduplication Relationships
 
 - Each original **Address** maps to exactly one **CanonicalAddress** through **AddressMapping**
