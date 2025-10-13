@@ -51,6 +51,7 @@ class Config:
                 "partition_by_settlement": True,
                 "csv_delimiter": ",",
                 "csv_header": True,
+                "max_workers": 8,  # Maximum number of parallel workers for export
             },
             # Deduplication settings
             "deduplication": {

@@ -186,7 +186,61 @@ The OEVK data processing pipeline includes the following stages:
 - **Data Validation**: ≤2 minutes for comprehensive checks
 - **Package Creation**: ≤5 minutes for artifact compression
 - **GitHub Integration**: ≤3 minutes for release creation
+- **CSV Export**: ~2.6 minutes for 3.3M addresses (single-query optimization)
 - **Idempotent Operations**: Safe to retry failed operations
+
+### CSV Export Optimization
+
+The project uses an optimized single-query approach for exporting canonical addresses:
+
+#### Export Performance
+- **Approach**: Single database query + Python partitioning
+- **Performance**: ~2.6 minutes for 3.3M addresses across 3,177 settlements
+- **Speed**: ~21,000 addresses/second
+- **Improvement**: ~17x faster than per-settlement query approach
+- **Query Time**: ~24 seconds to fetch all addresses with JOINs
+- **Write Time**: ~2.2 minutes to write 3,177 CSV files
+
+#### Export Features
+- **Automatic Cleanup**: Removes old export files before new export
+- **Incremental Progress**: Logs progress every 500 settlements
+- **Memory Efficient**: Streaming write approach
+- **Symlink Management**: Creates symlinks for release validation
+- **Default Directory**: `exports/` (aligned with release workflow)
+
+#### Export Commands
+```bash
+# Basic export to default directory (exports/)
+python -m src.cli export --db-path data/oevk.db
+
+# Export with custom output directory
+python -m src.cli export --db-path data/oevk.db --output-dir /path/to/output
+
+# Export with custom run tag
+python -m src.cli export --run-tag "v1.0.0"
+
+# Export only entity tables (skip addresses)
+python -m src.cli export --tables-only
+
+# Export only addresses (skip entity tables)
+python -m src.cli export --addresses-only
+```
+
+#### Export Structure
+```
+exports/
+├── {run_tag}_Address/              # 3,177 settlement CSV files
+│   ├── Address_001_Aba.csv
+│   ├── Address_002_Abádszalók.csv
+│   └── ...
+├── {run_tag}_County.csv            # Entity tables
+├── {run_tag}_Settlement.csv
+├── ... (8 more entity tables)
+├── addresses -> {run_tag}_Address  # Symlinks for release
+├── settlements.csv -> {run_tag}_Settlement.csv
+├── counties.csv -> {run_tag}_County.csv
+└── database.duckdb -> ../data/oevk.db
+```
 
 ## Release Workflow Usage Examples
 
