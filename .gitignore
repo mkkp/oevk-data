@@ -14,3 +14,6 @@ venv/
 **/*.db.wal
 /test_*.py
 *.csv
+.DS_Store
+**/.DS_Store
+/repomix-output.xml
