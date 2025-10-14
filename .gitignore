@@ -18,3 +18,4 @@ venv/
 **/.DS_Store
 /repomix-output.xml
 output
+*.sql.gz

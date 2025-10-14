@@ -99,9 +99,10 @@ def export_canonical_addresses_optimized(
         ),
         postal_codes AS (
             SELECT DISTINCT
-                CanonicalAddressID,
-                FIRST_VALUE(PIRCode) OVER (PARTITION BY CanonicalAddressID ORDER BY PIRCode) as PIRCode
-            FROM AddressPIRCodes
+                apc.CanonicalAddressID,
+                FIRST_VALUE(pc.ID) OVER (PARTITION BY apc.CanonicalAddressID ORDER BY apc.PIRCode) as PostalCodeID
+            FROM AddressPIRCodes apc
+            LEFT JOIN PostalCode pc ON apc.PIRCode = pc.PostalCode
         ),
         polling_stations AS (
             SELECT DISTINCT
@@ -120,7 +121,7 @@ def export_canonical_addresses_optimized(
             ca.HouseNumber,
             ad.Building,
             ad.Staircase,
-            COALESCE(pc.PIRCode, '00000000-0000-0000-0000-000000000000') as PostalCode_ID,
+            COALESCE(pc.PostalCodeID, '00000000-0000-0000-0000-000000000000') as PostalCode_ID,
             COALESCE(ps.PollingStationID, '00000000-0000-0000-0000-000000000000') as PollingStation_ID,
             COALESCE(ad.SettlementIndividualElectoralDistrict_ID, '00000000-0000-0000-0000-000000000000') as SettlementIndividualElectoralDistrict_ID,
             COALESCE(ad.County_ID, '00000000-0000-0000-0000-000000000000') as County_ID,
@@ -136,7 +137,7 @@ def export_canonical_addresses_optimized(
         GROUP BY ca.ID, ca.SettlementName, ca.FullAddress, ca.StreetName, ca.HouseNumber,
                  ad.PublicSpaceType, ad.Building, ad.Staircase,
                  ad.SettlementIndividualElectoralDistrict_ID, ad.County_ID, ad.Settlement_ID,
-                 ad.NationalIndividualElectoralDistrict_ID, pc.PIRCode, ps.PollingStationID
+                 ad.NationalIndividualElectoralDistrict_ID, pc.PostalCodeID, ps.PollingStationID
         ORDER BY ca.SettlementName, ca.FullAddress
     """).fetchall()
 

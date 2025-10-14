@@ -7,6 +7,12 @@ tags: [database, postgresql, docker, setup]
 
 Provides commands for managing database instances related to the project.
 
+## Available Commands
+
+- **db setup**: Setup local PostgreSQL database via Docker
+- **db export-dump**: Export PostgreSQL database to gzipped dump file
+- **db import-dump**: Import gzipped PostgreSQL dump file
+
 ### db:setup
 
 This command automates the creation and setup of a local PostgreSQL database using Docker. It creates a container, waits for it to be ready, and then executes the DDL (`schema.sql`) and DML (`data.sql`) scripts to build and populate the database.
@@ -137,3 +143,157 @@ The export contains **13 tables** with canonical (cleansed) data:
 
 **Not Exported (internal transformation tables):**
 - AddressMapping, DeduplicationReport, Address_new (these are excluded from PostgreSQL export)
+
+---
+
+### db:export-dump
+
+Export a PostgreSQL database to a gzipped dump file (`.sql.gz`). This creates a compressed backup of the entire database that can be easily shared, archived, or imported later.
+
+**Prerequisites**
+- Docker container with PostgreSQL running (default: `oevk`), OR
+- Local PostgreSQL installation with `pg_dump` available (use `--no-docker`)
+
+**Common Commands**
+
+1. **Export from Docker container (default)**:
+   ```bash
+   python src/cli.py db export-dump
+   ```
+   Creates: `exports/oevk_db_YYYYMMDD_HHMMSS.sql.gz`
+
+2. **Export to custom directory**:
+   ```bash
+   python src/cli.py db export-dump --output-dir backups
+   ```
+   Creates: `backups/oevk_db_YYYYMMDD_HHMMSS.sql.gz`
+
+3. **Export from local PostgreSQL (no Docker)**:
+   ```bash
+   python src/cli.py db export-dump --no-docker --host localhost --port 5432 --user postgres --password mypass
+   ```
+
+4. **Export from custom Docker container**:
+   ```bash
+   python src/cli.py db export-dump --container-name my-postgres
+   ```
+
+**CLI Parameters**
+
+- `--output-dir`: Output directory for dump file (default: `exports`)
+- `--container-name`: Docker container name (default: `oevk`)
+- `--no-docker`: Use local `pg_dump` instead of Docker container
+- `--host`: PostgreSQL host (default: `localhost`, only with `--no-docker`)
+- `--port`: PostgreSQL port (default: `5432`, only with `--no-docker`)
+- `--database`: Database name (default: `oevk`)
+- `--user`: PostgreSQL user (default: `oevk`)
+- `--password`: PostgreSQL password (default: `oevk`)
+
+**Dump Features**
+
+The dump includes:
+- `--clean`: DROP statements for all objects (safe to re-import)
+- `--if-exists`: Use `IF EXISTS` for DROP statements (no errors if objects don't exist)
+- `--no-owner`: Ownership commands removed (portable across systems)
+- `--no-privileges`: Privilege commands removed (portable across systems)
+- **Compression**: Gzip compression (typically 70-90% size reduction)
+
+**Example Output**:
+```
+================================================================================
+PostgreSQL Dump Export
+================================================================================
+Database: oevk
+Output: exports/oevk_db_20251014_230530.sql.gz
+Exporting from Docker container: oevk
+Compressing dump with gzip...
+✓ Dump created: exports/oevk_db_20251014_230530.sql.gz (45.2 MB)
+================================================================================
+```
+
+---
+
+### db:import-dump
+
+Import a gzipped PostgreSQL dump file (`.sql.gz`) into a PostgreSQL database. This restores a complete database backup.
+
+**Prerequisites**
+- Docker container with PostgreSQL running (default: `oevk`), OR
+- Local PostgreSQL installation with `psql` available (use `--no-docker`)
+- A `.sql.gz` dump file (created by `db export-dump` or `pg_dump`)
+
+**⚠️ Warning**: This command will **DROP and recreate** all database objects. All existing data will be replaced!
+
+**Common Commands**
+
+1. **Import to Docker container (default)**:
+   ```bash
+   python src/cli.py db import-dump exports/oevk_db_20251014_230530.sql.gz
+   ```
+
+2. **Import to custom Docker container**:
+   ```bash
+   python src/cli.py db import-dump backup.sql.gz --container-name my-postgres
+   ```
+
+3. **Import to local PostgreSQL (no Docker)**:
+   ```bash
+   python src/cli.py db import-dump backup.sql.gz --no-docker --host localhost --port 5432 --user postgres --password mypass
+   ```
+
+**CLI Parameters**
+
+- `dump_file` (required): Path to `.sql.gz` dump file to import
+- `--container-name`: Docker container name (default: `oevk`)
+- `--no-docker`: Use local `psql` instead of Docker container
+- `--host`: PostgreSQL host (default: `localhost`, only with `--no-docker`)
+- `--port`: PostgreSQL port (default: `5432`, only with `--no-docker`)
+- `--database`: Database name (default: `oevk`)
+- `--user`: PostgreSQL user (default: `oevk`)
+- `--password`: PostgreSQL password (default: `oevk`)
+
+**Example Output**:
+```
+================================================================================
+PostgreSQL Dump Import
+================================================================================
+Dump file: exports/oevk_db_20251014_230530.sql.gz (45.2 MB)
+Database: oevk
+Decompressing dump...
+Decompressed size: 320.5 MB
+Importing to Docker container: oevk
+✓ Import completed successfully
+================================================================================
+```
+
+**Common Use Cases**
+
+1. **Quick database restore**:
+   ```bash
+   # Export from one system
+   python src/cli.py db export-dump
+   
+   # Import to another system
+   python src/cli.py db import-dump exports/oevk_db_20251014_230530.sql.gz
+   ```
+
+2. **Backup and restore workflow**:
+   ```bash
+   # Create backup before risky operation
+   python src/cli.py db export-dump --output-dir backups
+   
+   # ... perform risky operation ...
+   
+   # Restore if something went wrong
+   python src/cli.py db import-dump backups/oevk_db_20251014_230530.sql.gz
+   ```
+
+3. **Share database snapshot**:
+   ```bash
+   # Export and share the .sql.gz file (portable across systems)
+   python src/cli.py db export-dump
+   # Upload: exports/oevk_db_20251014_230530.sql.gz
+   
+   # On another system
+   python src/cli.py db import-dump downloaded_dump.sql.gz
+   ```

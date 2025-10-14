@@ -56,14 +56,88 @@ These can be provided as command-line arguments or defined in a `.env` file.
     - If `"postgresql"` is in `formats`:
         - **Append** `INSERT` statements to the `exports/data.sql` file created by the main export function. The existing UUID conversion logic in this script will be used.
 
-### Phase 2: Update Release Process
+5.  **Add Export Control Flag:**
+    - Add `--skip-postgresql-export` flag to CLI (default: PostgreSQL export is enabled).
+    - When flag is present, skip all PostgreSQL-related operations (SQL generation, verification, dump creation).
+
+### Phase 2: Import Verification and Dump Creation
+
+1.  **Docker PostgreSQL Management (`src/utils/docker_postgresql.py`):**
+    - Create utility functions for Docker container lifecycle:
+        - `create_temp_postgresql_container()`: Start temporary PostgreSQL container with unique name
+        - `wait_for_postgresql_ready()`: Poll container until PostgreSQL accepts connections
+        - `stop_and_remove_container()`: Clean up temporary container
+    - Use Docker Python SDK or subprocess calls to `docker` CLI
+
+2.  **Import Verification (`src/etl/postgresql_verify.py`):**
+    - Create `verify_and_dump_postgresql()` function:
+        - Start temporary PostgreSQL container using Docker utilities
+        - Wait for database to be ready
+        - Execute `psql` to import `schema.sql` (create tables, indexes)
+        - Execute `psql` to import `data.sql` (insert data)
+        - Verify import success by querying row counts
+        - Execute `pg_dump` to create complete database dump
+        - Compress dump using `gzip` as `oevk_db_{timestamp}.sql.gz`
+        - Stop and remove temporary container
+        - Log all operations with detailed error handling
+
+3.  **Integration with Export Workflow:**
+    - Call verification function after SQL files are generated
+    - Only proceed if verification succeeds
+    - Include gzipped dump in export artifacts
+
+### Phase 3: Update Release Process
 
 1.  **Add PostgreSQL Packaging (`src/release/packaging.py`):**
     - Create a new method `package_postgresql_files` in the `FilePackager` class.
-    - This method will find `schema.sql` and `data.sql` in the `exports_dir`.
+    - This method will find `schema.sql`, `data.sql`, and `oevk_db_{timestamp}.sql.gz` in the `exports_dir`.
     - It will create a new ZIP archive named `oevk-postgresql-{release_tag}.zip`.
+    - Include standalone loader script and requirements.txt
     - It will return an artifact dictionary, similar to the other packaging methods.
 
 2.  **Update Release Workflow (`src/release/workflow.py`):**
     - In the `create_release_package` method of the `ReleaseWorkflow` class, add a call to the new `self.packager.package_postgresql_files` method.
     - Append the returned artifact dictionary to the `artifacts` list.
+
+## 3. Technical Decisions
+
+### 3.1. Why Use Temporary Docker Container for Verification?
+
+**Decision:** Use a temporary Docker PostgreSQL container for import verification rather than requiring a pre-existing database.
+
+**Rationale:**
+- **Isolation:** Each verification runs in a clean environment, preventing contamination from previous runs
+- **Consistency:** Ensures the same PostgreSQL version used across all environments
+- **Automation:** No manual database setup required before running verification
+- **CI/CD Friendly:** Works in automated pipelines without external dependencies
+
+**Alternatives Considered:**
+- **Manual PostgreSQL Setup:** Requires users to maintain a separate database instance (rejected - too much manual work)
+- **Skip Verification:** Trust SQL generation without testing (rejected - risky for data integrity)
+
+### 3.2. Why Create Gzipped Dump?
+
+**Decision:** Generate `pg_dump` output as gzipped file (`oevk_db_{timestamp}.sql.gz`) in addition to raw SQL files.
+
+**Rationale:**
+- **Size Reduction:** Gzip compression typically reduces PostgreSQL dumps by 70-90%
+- **Single File Distribution:** Users can import complete database with one file instead of two (schema + data)
+- **Version Compatibility:** `pg_dump` format is more portable across PostgreSQL versions
+- **Performance:** Faster to download and transfer compressed file
+
+**Alternatives Considered:**
+- **Only Raw SQL Files:** Larger file sizes, two files to manage (rejected - less convenient)
+- **Custom Binary Format:** Requires PostgreSQL-specific tools to restore (rejected - less accessible)
+
+### 3.3. Export Control Design
+
+**Decision:** Enable PostgreSQL export by default with opt-out flag `--skip-postgresql-export`.
+
+**Rationale:**
+- **Progressive Enhancement:** Users get PostgreSQL support automatically
+- **Backward Compatible:** Existing workflows continue to work
+- **Explicit Opt-Out:** Users who don't need PostgreSQL can easily disable it
+
+**Implementation:**
+- CLI flag: `--skip-postgresql-export` (boolean, default=False)
+- When enabled, skip: SQL generation, verification, dump creation, packaging
