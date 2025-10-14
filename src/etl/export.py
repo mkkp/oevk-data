@@ -233,12 +233,13 @@ def export_tables_to_csv(
 
             placeholder_uuid = "'00000000-0000-0000-0000-000000000000'"
 
+            # Match exact schema column names from src/database/schema.sql
             f.write(f"INSERT INTO County (ID, CountyCode, CountyName) VALUES ({placeholder_uuid}, 'UNKNOWN', 'Unknown County') ON CONFLICT DO NOTHING;\n")
             f.write(f"INSERT INTO Settlement (ID, SettlementCode, SettlementName, County_ID) VALUES ({placeholder_uuid}, 'UNKNOWN', 'Unknown Settlement', {placeholder_uuid}) ON CONFLICT DO NOTHING;\n")
             f.write(f"INSERT INTO NationalIndividualElectoralDistrict (ID, OEVK, Name, Center, Polygon, County_ID) VALUES ({placeholder_uuid}, 'UNKNOWN', 'Unknown District', NULL, NULL, {placeholder_uuid}) ON CONFLICT DO NOTHING;\n")
-            f.write(f"INSERT INTO SettlementIndividualElectoralDistrict (ID, TEVK, Name, Center, Polygon, Settlement_ID) VALUES ({placeholder_uuid}, 'UNKNOWN', 'Unknown District', NULL, NULL, {placeholder_uuid}) ON CONFLICT DO NOTHING;\n")
-            f.write(f"INSERT INTO PostalCode (ID, PIRCode, PostalCodeName) VALUES ({placeholder_uuid}, '0000', 'Unknown Postal Code') ON CONFLICT DO NOTHING;\n")
-            f.write(f"INSERT INTO PollingStation (ID, PollingStationNumber, PollingStationName, PollingStationAddress, Settlement_ID, SettlementIndividualElectoralDistrict_ID, County_ID, NationalIndividualElectoralDistrict_ID) VALUES ({placeholder_uuid}, 'UNKNOWN', 'Unknown Polling Station', 'Unknown Address', {placeholder_uuid}, {placeholder_uuid}, {placeholder_uuid}, {placeholder_uuid}) ON CONFLICT DO NOTHING;\n")
+            f.write(f"INSERT INTO SettlementIndividualElectoralDistrict (ID, TEVK, Name, County_ID, Settlement_ID, NationalIndividualElectoralDistrict_ID) VALUES ({placeholder_uuid}, 'UNKNOWN', 'Unknown District', {placeholder_uuid}, {placeholder_uuid}, {placeholder_uuid}) ON CONFLICT DO NOTHING;\n")
+            f.write(f"INSERT INTO PostalCode (ID, PostalCode) VALUES ({placeholder_uuid}, '0000') ON CONFLICT DO NOTHING;\n")
+            f.write(f"INSERT INTO PollingStation (ID, PollingStationAddress, SettlementIndividualElectoralDistrict_ID, County_ID, Settlement_ID, NationalIndividualElectoralDistrict_ID) VALUES ({placeholder_uuid}, 'Unknown Polling Station Address', {placeholder_uuid}, {placeholder_uuid}, {placeholder_uuid}, {placeholder_uuid}) ON CONFLICT DO NOTHING;\n")
             f.write("\n")
 
             for table in tables:
