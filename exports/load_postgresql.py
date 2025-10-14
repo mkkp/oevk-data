@@ -512,8 +512,8 @@ def verify_database(conn, verbose=True):
     try:
         cursor = conn.cursor()
 
-        # Check some key tables
-        tables_to_check = ["County", "Settlement", "Address", "CanonicalAddress"]
+        # Check some key tables (CanonicalAddress renamed to Address in PostgreSQL export)
+        tables_to_check = ["County", "Settlement", "Address", "PollingStation"]
 
         results = []
         total_rows = 0
