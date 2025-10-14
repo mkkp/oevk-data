@@ -237,7 +237,16 @@ python src/cli.py db setup --ddl-script /path/to/schema.sql --dml-script /path/t
 - Database: `oevk`
 - User: `oevk`
 - Password: `oevk`
-- Container: `oevk-postgres`
+- Container: `oevk`
+
+**Memory-Efficient Loading:**
+The setup command uses PostgreSQL's native `psql` tool via Docker for loading large DML files (2.2GB+), avoiding memory allocation errors. The process:
+1. Executes DDL script using psycopg2 (small schema file)
+2. Copies large DML file into Docker container
+3. Loads data using `psql -f` which streams efficiently
+4. Cleans up temporary files automatically
+
+**Note:** Loading 2.2GB of data may take several minutes depending on your system's performance.
 
 **Connect to database:**
 ```bash

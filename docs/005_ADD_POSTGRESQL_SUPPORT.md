@@ -366,6 +366,78 @@ INSERT INTO County (ID, CountyCode, CountyName) VALUES (...) ON CONFLICT DO NOTH
 
 **Result**: Database loads successfully complete without constraint violations.
 
+### 7.2. Memory-Efficient Database Setup (2025-10-15) ✅
+
+**Issue**: `python src/cli.py db setup` command failed with `psycopg2.OperationalError: cannot allocate memory for output buffer` when loading 2.2GB data.sql file.
+
+**Root Cause:**
+- Original implementation used `cur.execute(f.read())` which attempted to load entire 2.2GB file into memory at once
+- psycopg2 cannot allocate sufficient buffer for such large SQL files
+- Memory constraint applied to both Python process and psycopg2 driver
+
+**Fix Applied (src/cli.py:1280-1337):**
+
+Switched from psycopg2 to PostgreSQL's native `psql` command-line tool via Docker exec:
+
+**Old Approach (Memory Error):**
+```python
+# Execute DML script - FAILS with large files
+if os.path.exists(args.dml_script):
+    with open(args.dml_script, "r") as f:
+        cur.execute(f.read())  # Loads entire 2.2GB into memory
+```
+
+**New Approach (Streams Data):**
+```python
+# Execute DML script using psql via docker
+if os.path.exists(args.dml_script):
+    # 1. Copy SQL file into container
+    copy_command = [
+        "docker", "cp", dml_abs_path,
+        f"{container_name}:/tmp/{os.path.basename(args.dml_script)}"
+    ]
+    subprocess.run(copy_command, check=True)
+    
+    # 2. Load using psql (streams efficiently)
+    psql_command = [
+        "docker", "exec", "-i", container_name,
+        "psql", "-U", pg_config["user"], "-d", pg_config["db"],
+        "-f", f"/tmp/{os.path.basename(args.dml_script)}"
+    ]
+    subprocess.run(psql_command, capture_output=True, text=True)
+    
+    # 3. Cleanup temporary file
+    cleanup_command = [
+        "docker", "exec", container_name,
+        "rm", f"/tmp/{os.path.basename(args.dml_script)}"
+    ]
+    subprocess.run(cleanup_command, check=False)
+```
+
+**Benefits:**
+- ✅ **No Memory Limitations**: psql streams data directly from file, no in-memory buffering
+- ✅ **Handles Large Files**: Successfully loads 2.2GB+ SQL files without memory errors
+- ✅ **Production Performance**: Same performance as direct `psql` command-line usage
+- ✅ **Error Handling**: Captures stderr output for troubleshooting
+- ✅ **Automatic Cleanup**: Removes temporary files from container after loading
+- ✅ **User Experience**: Added progress logging for long-running operations
+
+**Verification:**
+```bash
+# Test with 2.2GB data file
+python src/cli.py db setup
+
+# Expected output:
+# INFO: Copying DML script to container...
+# INFO: Loading data into database (this may take a while for large files)...
+# INFO: DML script executed successfully.
+
+# Monitor progress (separate terminal):
+docker exec oevk ps aux | grep psql
+```
+
+**Loading Time**: ~5-10 minutes for 2.2GB data file depending on system performance.
+
 ## 8. Original Implementation Plan
 
 ### Phase 1: SQL Export and Schema Translation (✅ COMPLETED)

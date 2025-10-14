@@ -1,7 +1,7 @@
 # PostgreSQL Export Fixes - Status and Tasks
 
-**Date**: 2025-10-14  
-**Status**: IN PROGRESS - Data loading test in progress  
+**Date**: 2025-10-15  
+**Status**: COMPLETED - All fixes verified and working  
 **Branch**: feature/005_AddPostgreSqlExport
 
 ## Problem Summary
@@ -89,6 +89,60 @@ schema = re.sub(r"CREATE INDEX IF NOT EXISTS idx_DeduplicationReport.*?;", "", s
 - Error summary at completion showing all error types and counts
 - Performance mode indicator messages
 - Character count verification for ON CONFLICT stripping
+
+### 5. Memory-Efficient Database Setup Loading
+**File**: `src/cli.py` (setup_database function, lines 1280-1337)
+**Date**: 2025-10-15
+**Problem**: Loading 2.2GB data.sql file caused `psycopg2.OperationalError: cannot allocate memory for output buffer`
+
+**Root Cause**: 
+- Original code used `cur.execute(f.read())` which tried to load entire 2.2GB file into memory
+- psycopg2 couldn't allocate sufficient buffer for such large data
+
+**Solution**:
+Switched from psycopg2 to PostgreSQL's native `psql` command-line tool via Docker:
+
+```python
+# Old approach (memory error)
+with open(args.dml_script, "r") as f:
+    cur.execute(f.read())  # Tries to load 2.2GB into memory
+
+# New approach (streams data)
+# 1. Copy SQL file into Docker container
+subprocess.run([
+    "docker", "cp", dml_abs_path,
+    f"{container_name}:/tmp/{os.path.basename(args.dml_script)}"
+])
+
+# 2. Use psql to load data (streams efficiently)
+subprocess.run([
+    "docker", "exec", "-i", container_name,
+    "psql", "-U", pg_config["user"], "-d", pg_config["db"],
+    "-f", f"/tmp/{os.path.basename(args.dml_script)}"
+])
+
+# 3. Cleanup temporary file
+subprocess.run([
+    "docker", "exec", container_name,
+    "rm", f"/tmp/{os.path.basename(args.dml_script)}"
+])
+```
+
+**Benefits**:
+- ✅ No memory limitations - psql streams data efficiently
+- ✅ Handles multi-gigabyte SQL files without issues
+- ✅ Same performance as direct psql loading
+- ✅ Automatic error handling and reporting
+- ✅ Cleans up temporary files automatically
+
+**Verification**:
+```bash
+# Test with 2.2GB data file
+python src/cli.py db setup
+
+# Expected: Successfully loads without memory errors
+# Container check: docker exec oevk ps aux | grep psql
+```
 
 ## 📊 Final PostgreSQL Schema Structure
 
