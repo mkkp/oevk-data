@@ -342,7 +342,31 @@ INSERT INTO County (ID, CountyCode, CountyName) VALUES (...) ON CONFLICT DO NOTH
   - Integration tests: Export, db setup, documentation
   - Performance tests: Scalability, throughput benchmarks
 
-## 7. Original Implementation Plan
+## 7. Fixes and Improvements (2025-10-14)
+
+### 7.1. PostgreSQL Data Loading Fixes ✅
+
+**Issue**: Database load failures with foreign key and NOT NULL constraint violations when using `--drop-database` or `--clean` flags.
+
+**Root Causes Identified:**
+1. **Foreign Key Violations**: Canonical addresses used placeholder UUID `00000000-0000-0000-0000-000000000000` for missing foreign key references, but these placeholder records didn't exist in referenced tables
+2. **NOT NULL Violations**: Empty string values (`""`) were being converted to `NULL` in SQL, violating NOT NULL constraints on columns like `PublicSpaceType`
+
+**Fixes Applied:**
+
+1. **Placeholder Records (src/etl/export.py:214-241)**:
+   - Added placeholder UUID records for all reference tables before data export
+   - Ensures foreign key integrity when Address table references missing data
+   - Tables: County, Settlement, PostalCode, PollingStation, NationalIndividualElectoralDistrict, SettlementIndividualElectoralDistrict
+
+2. **Empty String Handling (src/etl/export_canonical_v3.py:233-257)**:
+   - Updated `format_sql_value()` function with `allow_empty_string` parameter
+   - Distinguishes between `None` (→ NULL) and `""` (→ empty string '')
+   - Applied to NOT NULL columns: FullAddress, PublicSpaceName, PublicSpaceType, HouseNumber, Building, Staircase
+
+**Result**: Database loads successfully complete without constraint violations.
+
+## 8. Original Implementation Plan
 
 ### Phase 1: SQL Export and Schema Translation (✅ COMPLETED)
 
