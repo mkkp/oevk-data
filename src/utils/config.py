@@ -67,6 +67,14 @@ class Config:
                 "generate_reports": True,
                 "export_mappings": True,
             },
+            # PostgreSQL settings
+            "postgresql": {
+                "host": "localhost",
+                "port": 15432,
+                "db": "oevk",
+                "user": "oevk",
+                "password": "oevk",
+            },
         }
 
         # Load environment variables
@@ -162,6 +170,27 @@ class Config:
                 deduplication_max_memory
             )
 
+        # PostgreSQL settings
+        postgres_host = os.getenv("POSTGRES_HOST")
+        if postgres_host:
+            self._config["postgresql"]["host"] = postgres_host
+
+        postgres_port = os.getenv("POSTGRES_PORT")
+        if postgres_port:
+            self._config["postgresql"]["port"] = int(postgres_port)
+
+        postgres_db = os.getenv("POSTGRES_DB")
+        if postgres_db:
+            self._config["postgresql"]["db"] = postgres_db
+
+        postgres_user = os.getenv("POSTGRES_USER")
+        if postgres_user:
+            self._config["postgresql"]["user"] = postgres_user
+
+        postgres_password = os.getenv("POSTGRES_PASSWORD")
+        if postgres_password:
+            self._config["postgresql"]["password"] = postgres_password
+
     def _create_directories(self) -> None:
         """Create required directories if they don't exist."""
         paths = self._config["paths"]
@@ -244,6 +273,10 @@ class Config:
     def get_deduplication_settings(self) -> Dict[str, Any]:
         """Get deduplication settings."""
         return self._config["deduplication"]
+
+    def get_postgresql_settings(self) -> Dict[str, Any]:
+        """Get PostgreSQL settings."""
+        return self._config["postgresql"]
 
     def to_dict(self) -> Dict[str, Any]:
         """Get the complete configuration as a dictionary."""

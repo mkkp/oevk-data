@@ -7,6 +7,7 @@ import csv
 import json
 import shutil
 import duckdb
+from pathlib import Path
 
 from src.utils.pipeline_logging import get_logger
 
@@ -23,20 +24,172 @@ def to_uuid3(value):
     return str(uuid.uuid3(OEVK_NAMESPACE, str(value)))
 
 
+def generate_postgresql_schema():
+    """Translates SQLite schema to PostgreSQL-compatible schema.
+
+    Converts ID columns from TEXT to UUID type and makes other necessary
+    PostgreSQL-specific adjustments.
+
+    Returns:
+        str: PostgreSQL-compatible schema DDL
+    """
+    schema_path = Path(__file__).parent.parent / "database" / "schema.sql"
+    with open(schema_path, "r", encoding="utf-8") as f:
+        schema = f.read()
+
+    # Convert ID columns from TEXT to UUID
+    # Pattern: ID TEXT PRIMARY KEY -> ID UUID PRIMARY KEY
+    import re
+
+    # Replace all ID columns (primary keys and foreign keys)
+    schema = re.sub(r"\bID TEXT PRIMARY KEY\b", "ID UUID PRIMARY KEY", schema)
+
+    # Match both underscore style (_ID) and camelCase style (AddressID, PollingStationID, etc.)
+    schema = re.sub(r"\b(\w+_ID) TEXT NOT NULL\b", r"\1 UUID NOT NULL", schema)
+    schema = re.sub(r"\b(\w+_ID) TEXT\b", r"\1 UUID", schema)
+    schema = re.sub(r"\b(\w+ID) TEXT NOT NULL\b", r"\1 UUID NOT NULL", schema)
+    schema = re.sub(r"\b(\w+ID) TEXT,", r"\1 UUID,", schema)
+
+    # For PostgreSQL export, we only want the canonical (cleansed) data:
+    # - Remove original Address table (dirty data)
+    # - Remove Address_new (SQLite artifact)
+    # - Remove AddressMapping (internal transformation data)
+    # - Remove DeduplicationReport (internal analytics)
+    # - Rename CanonicalAddress to Address (this is the clean data)
+    # - Update AddressPollingStations and AddressPIRCodes to reference Address
+
+    # Remove unwanted tables
+    schema = re.sub(
+        r"-- Address table.*?CREATE TABLE IF NOT EXISTS Address \(.*?\);",
+        "",
+        schema,
+        flags=re.DOTALL,
+    )
+    schema = re.sub(
+        r"CREATE TABLE IF NOT EXISTS Address_new.*?;", "", schema, flags=re.DOTALL
+    )
+    schema = re.sub(
+        r"CREATE TABLE IF NOT EXISTS AddressMapping.*?;", "", schema, flags=re.DOTALL
+    )
+    schema = re.sub(
+        r"CREATE TABLE IF NOT EXISTS DeduplicationReport.*?;",
+        "",
+        schema,
+        flags=re.DOTALL,
+    )
+
+    # Remove comment sections for removed tables
+    schema = re.sub(r"-- Deduplication tables.*?\n", "", schema)
+    schema = re.sub(r"-- New indexes for deduplication tables.*?\n", "", schema)
+
+    # Remove indexes for removed tables
+    schema = re.sub(r"CREATE INDEX IF NOT EXISTS idx_Address_new.*?;", "", schema)
+    schema = re.sub(r"CREATE INDEX IF NOT EXISTS idx_Address_.*?;", "", schema)
+    schema = re.sub(r"CREATE INDEX IF NOT EXISTS idx_AddressMapping.*?;", "", schema)
+    schema = re.sub(r"CREATE INDEX IF NOT EXISTS idx_CanonicalAddress.*?;", "", schema)
+    schema = re.sub(
+        r"CREATE INDEX IF NOT EXISTS idx_DeduplicationReport.*?;", "", schema
+    )
+
+    # Remove CanonicalAddress table and insert custom Address table at the right position
+    # The Address table must come BEFORE AddressPollingStations and AddressPIRCodes
+    # which reference it
+
+    # Replace CanonicalAddress table with a placeholder
+    schema = re.sub(
+        r"-- CanonicalAddress table.*?CREATE TABLE IF NOT EXISTS CanonicalAddress \(.*?\);",
+        "%%ADDRESS_TABLE_PLACEHOLDER%%",
+        schema,
+        flags=re.DOTALL,
+    )
+
+    # Update references: CanonicalAddressID -> AddressID in remaining tables
+    schema = re.sub(r"\bCanonicalAddressID\b", "AddressID", schema)
+    schema = re.sub(r"REFERENCES CanonicalAddress", "REFERENCES Address", schema)
+
+    # Update index names: idx_*_CanonicalAddressID -> idx_*_AddressID
+    schema = re.sub(r"idx_(\w+)_CanonicalAddressID", r"idx_\1_AddressID", schema)
+
+    # Create custom Address table for PostgreSQL with the exact structure we export
+    # This combines data from CanonicalAddress with computed fields from canonical export
+    custom_address_table = """
+-- Address table (canonical/cleansed addresses)
+-- This is the deduplicated, cleansed address data exported from CanonicalAddress
+CREATE TABLE IF NOT EXISTS Address (
+    ID UUID PRIMARY KEY,
+    Sequence INTEGER NOT NULL,
+    OriginalOrder INTEGER NOT NULL,
+    FullAddress TEXT NOT NULL,
+    PublicSpaceName TEXT NOT NULL,
+    PublicSpaceType TEXT NOT NULL,
+    HouseNumber TEXT NOT NULL,
+    Building TEXT,
+    Staircase TEXT,
+    PostalCode_ID UUID NOT NULL,
+    PollingStation_ID UUID NOT NULL,
+    SettlementIndividualElectoralDistrict_ID UUID NOT NULL,
+    County_ID UUID NOT NULL,
+    Settlement_ID UUID NOT NULL,
+    NationalIndividualElectoralDistrict_ID UUID NOT NULL,
+    OriginalAddressCount INTEGER,
+    FOREIGN KEY (PostalCode_ID) REFERENCES PostalCode(ID),
+    FOREIGN KEY (PollingStation_ID) REFERENCES PollingStation(ID),
+    FOREIGN KEY (SettlementIndividualElectoralDistrict_ID) REFERENCES SettlementIndividualElectoralDistrict(ID),
+    FOREIGN KEY (County_ID) REFERENCES County(ID),
+    FOREIGN KEY (Settlement_ID) REFERENCES Settlement(ID),
+    FOREIGN KEY (NationalIndividualElectoralDistrict_ID) REFERENCES NationalIndividualElectoralDistrict(ID)
+);
+
+"""
+
+    # Add PostgreSQL-specific statements
+    postgresql_header = """-- PostgreSQL Schema for OEVK Data
+-- Translated from SQLite schema
+-- All ID columns use UUID type
+
+"""
+
+    # Add PostgreSQL-specific extensions and indexes at the end
+    postgresql_indexes = """
+
+-- PostgreSQL-specific extensions for text search
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+-- Trigram index for efficient LIKE/ILIKE queries on FullAddress
+-- Enables fast substring searches like '%Bar%' and '%utca%'
+CREATE INDEX IF NOT EXISTS idx_address_fulladdress_trgm ON Address USING gin (FullAddress gin_trgm_ops);
+"""
+
+    # Replace the placeholder with the custom Address table definition
+    # This ensures Address table appears in the correct position (before AddressPollingStations)
+    schema = schema.replace("%%ADDRESS_TABLE_PLACEHOLDER%%", custom_address_table)
+
+    return postgresql_header + schema + postgresql_indexes
+
+
 def export_tables_to_csv(
-    db_connection: duckdb.DuckDBPyConnection, export_dir: str, run_tag: str
-) -> None:
-    """Exports all target tables (except Address) to CSV files.
+    conn,
+    output_dir: str,
+    run_tag: str,
+    formats: list = None,
+    max_workers: int = 8,
+):
+    """Exports all target tables (except Address) to CSV files and optionally PostgreSQL SQL.
 
     Args:
-        db_connection: An active DuckDB connection.
-        export_dir: The directory to save CSV files.
+        conn: An active DuckDB connection.
+        output_dir: The directory to save CSV files.
         run_tag: The run tag to include in filenames.
+        formats: List of export formats. Defaults to ["csv"]. Can include "csv" and/or "postgresql".
+        max_workers: Maximum number of parallel workers (not currently used).
     """
-    logger.info(f"Exporting tables to CSV in {export_dir}")
+    if formats is None:
+        formats = ["csv"]
+
+    logger.info(f"Exporting tables to {', '.join(formats)} in {output_dir}")
 
     # Create export directory if it doesn't exist
-    os.makedirs(export_dir, exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
 
     # List of tables to export (excluding Address which gets special treatment)
     tables = [
@@ -52,8 +205,33 @@ def export_tables_to_csv(
         "SettlementPublicSpaces",
     ]
 
-    for table in tables:
-        export_table_to_csv(db_connection, table, export_dir, run_tag)
+    # Handle CSV export
+    if "csv" in formats:
+        for table in tables:
+            export_table_to_csv(conn, table, output_dir, run_tag)
+        logger.info("CSV export completed")
+
+    # Handle PostgreSQL export
+    if "postgresql" in formats:
+        logger.info("Generating PostgreSQL schema...")
+        schema_sql = generate_postgresql_schema()
+        schema_path = os.path.join(output_dir, "schema.sql")
+        with open(schema_path, "w", encoding="utf-8") as f:
+            f.write(schema_sql)
+        logger.info(f"Schema written to {schema_path}")
+
+        logger.info("Generating PostgreSQL data INSERT statements...")
+        data_path = os.path.join(output_dir, "data.sql")
+        with open(data_path, "w", encoding="utf-8") as f:
+            f.write("-- PostgreSQL Data INSERT Statements\n")
+            f.write("-- All ID values are converted to UUID format\n\n")
+
+            for table in tables:
+                logger.info(f"  Exporting {table} to SQL...")
+                export_table_to_postgresql(conn, table, f)
+
+        logger.info(f"Data written to {data_path}")
+        logger.info("PostgreSQL export completed")
 
     logger.info("Table export completed")
 
@@ -89,6 +267,75 @@ def export_table_to_csv(
         )
     else:
         logger.error(f"Failed to export {table_name}")
+
+
+def export_table_to_postgresql(
+    db_connection: duckdb.DuckDBPyConnection,
+    table_name: str,
+    output_file,
+) -> None:
+    """Exports a single table to PostgreSQL INSERT statements.
+
+    Converts xxhash64 ID values to UUID v3 format.
+
+    Args:
+        db_connection: An active DuckDB connection.
+        table_name: Name of the table to export.
+        output_file: File handle to write INSERT statements to.
+    """
+    # Get column names and types
+    schema_info = db_connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+    columns = [col[1] for col in schema_info]  # col[1] is the column name
+
+    # Identify ID columns that need UUID conversion
+    id_columns = set()
+    for col_name in columns:
+        if col_name == "ID" or col_name.endswith("_ID"):
+            id_columns.add(col_name)
+
+    # Fetch all rows
+    rows = db_connection.execute(f"SELECT * FROM {table_name}").fetchall()
+
+    if not rows:
+        output_file.write(f"-- Table {table_name} is empty\n\n")
+        return
+
+    output_file.write(f"-- Table: {table_name}\n")
+    output_file.write(f"-- Rows: {len(rows)}\n")
+
+    # Generate INSERT statements
+    for row in rows:
+        values = []
+        for i, value in enumerate(row):
+            col_name = columns[i]
+
+            # Convert ID columns to UUID
+            if col_name in id_columns:
+                uuid_value = to_uuid3(value)
+                if uuid_value is None:
+                    values.append("NULL")
+                else:
+                    values.append(f"'{uuid_value}'")
+            elif value is None:
+                values.append("NULL")
+            elif isinstance(value, str):
+                # Escape single quotes for SQL
+                escaped_value = value.replace("'", "''")
+                values.append(f"'{escaped_value}'")
+            elif isinstance(value, (int, float)):
+                values.append(str(value))
+            else:
+                # For other types, convert to string and escape
+                escaped_value = str(value).replace("'", "''")
+                values.append(f"'{escaped_value}'")
+
+        columns_str = ", ".join(columns)
+        values_str = ", ".join(values)
+        output_file.write(
+            f"INSERT INTO {table_name} ({columns_str}) VALUES ({values_str}) ON CONFLICT DO NOTHING;\n"
+        )
+
+    output_file.write("\n")
 
 
 def export_addresses_partitioned(

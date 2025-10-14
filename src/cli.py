@@ -1,4 +1,4 @@
-"""Command-line interface for the OEVK data processing pipeline."""
+"Command-line interface for the OEVK data processing pipeline."
 
 import argparse
 import datetime
@@ -28,7 +28,6 @@ from src.etl.export import (
     export_addresses_partitioned,
     export_tables_to_csv,
 )
-from src.etl.export_canonical_v2 import export_canonical_addresses_with_uuid
 from src.etl.export_canonical_v3 import export_canonical_addresses_optimized
 from src.etl.ingest import download_sources, load_staging_data
 from src.etl.transform_optimized import transform_all_optimized
@@ -272,6 +271,32 @@ Examples:
         help="Create symlinks instead of copying files (Unix-only, auto-detected by default)",
     )
 
+    # Database setup command
+    db_parser = subparsers.add_parser(
+        "db", help="Manage database operations (e.g., setup PostgreSQL)"
+    )
+    db_subparsers = db_parser.add_subparsers(dest="db_command", help="Database command")
+
+    # db setup command
+    setup_parser = db_subparsers.add_parser(
+        "setup", help="Setup local PostgreSQL database via Docker"
+    )
+    setup_parser.add_argument(
+        "--ddl-script",
+        default="exports/schema.sql",
+        help="Path to DDL script (default: exports/schema.sql)",
+    )
+    setup_parser.add_argument(
+        "--dml-script",
+        default="exports/data.sql",
+        help="Path to DML script (default: exports/data.sql)",
+    )
+    setup_parser.add_argument(
+        "--force-recreate",
+        action="store_true",
+        help="Force recreation of Docker container",
+    )
+
     # Release commands (if available)
     if RELEASE_AVAILABLE:
         release_parser = subparsers.add_parser(
@@ -450,6 +475,8 @@ Examples:
         run_pipeline(args)
     elif args.command == "export":
         export_data(args)
+    elif args.command == "db":
+        handle_db_command(args)
     elif args.command == "release" and RELEASE_AVAILABLE:
         handle_release_command(args)
     else:
@@ -519,7 +546,10 @@ def export_data(args):
         # Export entity tables
         if export_tables:
             logger.info("=== EXPORTING ENTITY TABLES ===")
-            export_tables_to_csv(conn, args.output_dir, run_tag)
+            # By default, export both CSV and PostgreSQL formats
+            export_tables_to_csv(
+                conn, args.output_dir, run_tag, formats=["csv", "postgresql"]
+            )
             logger.info("Entity tables export completed")
 
         # Export addresses
@@ -533,7 +563,10 @@ def export_data(args):
 
             # Export canonical (deduplicated) addresses with UUID v3 (optimized)
             logger.info("Exporting canonical addresses (optimized single-query)")
-            export_canonical_addresses_optimized(conn, args.output_dir, run_tag)
+            # By default, export both CSV and PostgreSQL formats
+            export_canonical_addresses_optimized(
+                conn, args.output_dir, run_tag, formats=["csv", "postgresql"]
+            )
 
             # Optionally export all original addresses (for debugging/analysis)
             if args.export_original_addresses:
@@ -716,11 +749,17 @@ def run_pipeline(args):
                 0
             ]
 
-            export_tables_to_csv(conn, args.output_dir, run_tag)
+            # By default, export both CSV and PostgreSQL formats
+            export_tables_to_csv(
+                conn, args.output_dir, run_tag, formats=["csv", "postgresql"]
+            )
 
             # Export canonical (deduplicated) addresses with UUID v3 (optimized)
             logger.info("Exporting canonical addresses (optimized single-query)")
-            export_canonical_addresses_optimized(conn, args.output_dir, run_tag)
+            # By default, export both CSV and PostgreSQL formats
+            export_canonical_addresses_optimized(
+                conn, args.output_dir, run_tag, formats=["csv", "postgresql"]
+            )
 
             # Optionally export all original addresses (for debugging/analysis)
             if args.export_original_addresses:
@@ -775,6 +814,15 @@ def run_pipeline(args):
     finally:
         # Close database connection
         conn.close()
+
+
+def handle_db_command(args):
+    """Handle database subcommands."""
+    if args.db_command == "setup":
+        setup_database(args)
+    else:
+        print("Unknown database command. Use 'db setup' to setup PostgreSQL database.")
+        sys.exit(1)
 
 
 def handle_release_command(args):
@@ -978,6 +1026,126 @@ def handle_release_command(args):
     except Exception as e:
         logger.error(f"Release command failed: {e}")
         sys.exit(1)
+
+
+def setup_database(args):
+    """Setup PostgreSQL database in Docker."""
+    logger.info("Setting up PostgreSQL database...")
+
+    config = Config()
+    pg_config = config.get("postgresql")
+
+    container_name = "oevk"
+
+    # Check if container exists
+    try:
+        result = subprocess.run(
+            [
+                "docker",
+                "ps",
+                "-a",
+                "--filter",
+                f"name={container_name}",
+                "--format",
+                "{{.Names}}",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        container_exists = container_name in result.stdout.strip().split("\n")
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        logger.error(
+            "Docker is not running or not installed. Please start Docker and try again."
+        )
+        sys.exit(1)
+
+    if container_exists and args.force_recreate:
+        logger.info(f"Removing existing container: {container_name}")
+        subprocess.run(["docker", "rm", "-f", container_name], check=True)
+        container_exists = False
+
+    if not container_exists:
+        logger.info(f"Creating Docker container: {container_name}")
+        docker_command = [
+            "docker",
+            "run",
+            "--name",
+            container_name,
+            "-e",
+            f"POSTGRES_PASSWORD={pg_config['password']}",
+            "-e",
+            f"POSTGRES_USER={pg_config['user']}",
+            "-e",
+            f"POSTGRES_DB={pg_config['db']}",
+            "-d",
+            "-p",
+            f"{pg_config['port']}:5432",
+            "postgres",
+        ]
+        subprocess.run(docker_command, check=True)
+        logger.info("Waiting for PostgreSQL to be ready...")
+        time.sleep(10)  # Wait for the database to initialize
+    else:
+        logger.info(f"Container {container_name} already exists. Starting it.")
+        subprocess.run(["docker", "start", container_name], check=True)
+        logger.info("Waiting for PostgreSQL to be ready...")
+        time.sleep(5)
+
+    # Connect to the database and execute scripts
+    try:
+        import psycopg2
+        from psycopg2 import sql
+    except ImportError:
+        logger.error(
+            "psycopg2-binary is not installed. Please install it with: pip install psycopg2-binary"
+        )
+        sys.exit(1)
+
+    conn = None
+    for i in range(5):
+        try:
+            conn = psycopg2.connect(
+                host=pg_config["host"],
+                port=pg_config["port"],
+                dbname=pg_config["db"],
+                user=pg_config["user"],
+                password=pg_config["password"],
+            )
+            break
+        except psycopg2.OperationalError:
+            logger.info(f"Waiting for database connection... ({i + 1}/5)")
+            time.sleep(5)
+
+    if not conn:
+        logger.error("Could not connect to the PostgreSQL database.")
+        sys.exit(1)
+
+    conn.autocommit = True
+    cur = conn.cursor()
+
+    # Execute DDL script
+    if os.path.exists(args.ddl_script):
+        logger.info(f"Executing DDL script: {args.ddl_script}")
+        with open(args.ddl_script, "r") as f:
+            cur.execute(f.read())
+        logger.info("DDL script executed successfully.")
+    else:
+        logger.warning(f"DDL script not found at: {args.ddl_script}")
+
+    # Execute DML script
+    if os.path.exists(args.dml_script):
+        logger.info(f"Executing DML script: {args.dml_script}")
+        with open(args.dml_script, "r") as f:
+            cur.execute(f.read())
+        logger.info("DML script executed successfully.")
+    else:
+        logger.warning(f"DML script not found at: {args.dml_script}")
+
+    cur.close()
+    conn.close()
+
+    logger.info("Database setup completed successfully.")
 
 
 if __name__ == "__main__":

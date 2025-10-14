@@ -137,6 +137,16 @@ class ReleaseWorkflow:
         )
         artifacts.append(db_artifact)
 
+        # Package PostgreSQL SQL files if they exist
+        try:
+            postgresql_artifact = self.packager.package_postgresql_files(
+                self.exports_dir, tag, force=force_rebuild
+            )
+            artifacts.append(postgresql_artifact)
+            self.logger.logger.info("PostgreSQL artifacts packaged successfully")
+        except FileNotFoundError as e:
+            self.logger.logger.warning(f"PostgreSQL files not found, skipping: {e}")
+
         # Create release package using the correct model structure
         package = ReleasePackage.create(
             release_tag=tag,

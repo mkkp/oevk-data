@@ -196,15 +196,138 @@ export STAGING_DIR="/path/to/staging"
 export EXPORTS_DIR="/path/to/exports"
 ```
 
+### PostgreSQL Export and Database Setup
+
+The pipeline supports exporting canonical (cleansed/deduplicated) data to PostgreSQL format:
+
+#### Automatic PostgreSQL Export
+
+```bash
+# Export generates both CSV and PostgreSQL SQL files by default
+python src/cli.py export
+
+# This creates:
+# - exports/*.csv (CSV files with canonical addresses)
+# - exports/schema.sql (PostgreSQL DDL with UUID types and trigram indexes)
+# - exports/data.sql (PostgreSQL DML with INSERT statements - ~2.2GB for 3.3M addresses)
+```
+
+**PostgreSQL Export Structure:**
+- **Canonical Data Only**: Exports cleansed, deduplicated addresses (not raw transformation data)
+- **13 Tables**: Entity tables + canonical Address table + reference tables
+- **No Internal Tables**: AddressMapping, DeduplicationReport, Address_new excluded
+- **OriginalAddressCount**: Track how many original addresses map to each canonical address
+
+#### Local PostgreSQL Database Setup
+
+```bash
+# Setup local PostgreSQL in Docker (uses 'oevk' for db/user/password)
+python src/cli.py db setup
+
+# Force recreate (drops and recreates container)
+python src/cli.py db setup --force-recreate
+
+# Custom script locations
+python src/cli.py db setup --ddl-script /path/to/schema.sql --dml-script /path/to/data.sql
+```
+
+**Default Configuration:**
+- Host: `localhost`
+- Port: `15432`
+- Database: `oevk`
+- User: `oevk`
+- Password: `oevk`
+- Container: `oevk-postgres`
+
+**Connect to database:**
+```bash
+psql -h localhost -p 15432 -U oevk -d oevk
+```
+
+**Environment Variables:**
+```bash
+export POSTGRES_HOST=localhost
+export POSTGRES_PORT=15432
+export POSTGRES_DB=oevk
+export POSTGRES_USER=oevk
+export POSTGRES_PASSWORD=oevk
+```
+
+#### PostgreSQL Features
+
+- **UUID Primary Keys**: All ID columns converted from xxhash64 to UUID v3 format
+- **Trigram Text Search**: GIN indexes on `FullAddress` for efficient substring searches
+- **Idempotent Inserts**: Uses `ON CONFLICT DO NOTHING` - safe to run multiple times
+- **Performance**: 100K+ rows/sec throughput
+
+**Example queries:**
+```sql
+-- Substring search (case-insensitive)
+SELECT * FROM Address WHERE FullAddress ILIKE '%Budapest%';
+
+-- Find streets with "utca" (Hungarian for street)
+SELECT * FROM Address WHERE FullAddress ILIKE '%utca%';
+```
+
+#### Standalone PostgreSQL Loader
+
+Release packages include a standalone Python loader script with enhanced features:
+
+```bash
+# Extract release ZIP
+unzip oevk-postgresql-v*.zip
+cd oevk-postgresql-v*/
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Option 1: Auto-create Docker PostgreSQL
+python load_postgresql.py --docker
+
+# Option 2: Load to existing database
+python load_postgresql.py --host localhost --port 5432 --db mydb --user myuser
+
+# Option 3: Fresh load with performance optimization (removes ON CONFLICT clauses)
+python load_postgresql.py --docker --drop-database
+
+# Option 4: Clean existing data (truncate tables)
+python load_postgresql.py --docker --clean
+
+# Option 5: Custom chunk size for memory-constrained environments
+python load_postgresql.py --docker --chunk-size 4096
+```
+
+**Loader Features:**
+- **Automatic Docker Setup**: Creates and starts PostgreSQL container if needed
+- **Port Conflict Detection**: Automatically detects and handles port conflicts
+- **Progress Tracking**: Shows progress percentage, execution count, and ETA
+- **Performance Mode**: Strips `ON CONFLICT DO NOTHING` for fresh loads (10-100x faster)
+- **Memory Efficient**: Streams large files (2GB+) without loading into memory
+- **Error Tracking**: Groups and counts error types with detailed summaries
+- **Idempotent**: Safe to re-run multiple times with `ON CONFLICT DO NOTHING`
+- **Three Processing Modes**:
+  - Small files (<10MB): Direct load
+  - Medium files (10-100MB): Streaming with progress
+  - Large files (>100MB): Statement-by-statement batch execution
+
+**Performance Notes:**
+- For production loads of large files (>100MB), use `psql` directly for 10-100x speed:
+  ```bash
+  psql -h localhost -p 15432 -U oevk -d oevk -f data.sql
+  ```
+- Python loader is ideal for development, testing, and automated deployments
+- Use `--drop-database` or `--clean` flags for optimal performance on fresh loads
+
 ### Pipeline Stages
 
-The pipeline consists of five main stages:
+The pipeline consists of six main stages:
 
 1. **Ingest**: Download source data and load into staging tables
 2. **Transform**: Process staging data into normalized target tables
 3. **Public Space Extraction**: Extract public space entities from addresses
-4. **Export**: Generate CSV files from target tables
-5. **Release**: Package and publish data to GitHub releases
+4. **Export**: Generate CSV and PostgreSQL SQL files from target tables
+5. **Database Setup**: Load data into local PostgreSQL instance (optional)
+6. **Release**: Package and publish data to GitHub releases
 
 ### Release Workflow Stages
 
@@ -249,7 +372,7 @@ SettlementPublicSpaces: 122,524 rows
 
 ### Release Artifacts
 
-Each release creates two main artifacts:
+Each release creates three main artifacts:
 
 1. **CSV Archive** (`oevk-data-csv-{tag}.zip`): Contains all CSV files
    - `{run_tag}_Address/` - Directory containing address files split by settlement:
@@ -265,6 +388,13 @@ Each release creates two main artifacts:
 
 2. **Database Archive** (`oevk-data-db-{tag}.zip`): Contains main transformed database
    - `oevk.db` - Complete relational database with all tables including public space entities and canonical addresses
+
+3. **PostgreSQL Archive** (`oevk-postgresql-{tag}.zip`): PostgreSQL-ready package with standalone loader
+   - `schema.sql` - PostgreSQL DDL with UUID types and trigram indexes (11 KB)
+   - `data.sql` - PostgreSQL DML with idempotent INSERT statements (~40 MB)
+   - `load_postgresql.py` - Standalone Python loader script with Docker support
+   - `requirements.txt` - Python dependencies (psycopg2-binary)
+   - `README.md` - Quick start guide and usage examples
 
 ### Address Export Format
 
