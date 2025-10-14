@@ -226,6 +226,21 @@ def export_tables_to_csv(
             f.write("-- PostgreSQL Data INSERT Statements\n")
             f.write("-- All ID values are converted to UUID format\n\n")
 
+            # Insert placeholder records for missing foreign key references
+            # These are used by canonical addresses when data is missing
+            f.write("-- Placeholder records for missing foreign key references\n")
+            f.write("-- Used by Address table when foreign key data is unavailable\n\n")
+
+            placeholder_uuid = "'00000000-0000-0000-0000-000000000000'"
+
+            f.write(f"INSERT INTO County (ID, CountyCode, CountyName) VALUES ({placeholder_uuid}, 'UNKNOWN', 'Unknown County') ON CONFLICT DO NOTHING;\n")
+            f.write(f"INSERT INTO Settlement (ID, SettlementCode, SettlementName, County_ID) VALUES ({placeholder_uuid}, 'UNKNOWN', 'Unknown Settlement', {placeholder_uuid}) ON CONFLICT DO NOTHING;\n")
+            f.write(f"INSERT INTO NationalIndividualElectoralDistrict (ID, OEVK, Name, Center, Polygon, County_ID) VALUES ({placeholder_uuid}, 'UNKNOWN', 'Unknown District', NULL, NULL, {placeholder_uuid}) ON CONFLICT DO NOTHING;\n")
+            f.write(f"INSERT INTO SettlementIndividualElectoralDistrict (ID, TEVK, Name, Center, Polygon, Settlement_ID) VALUES ({placeholder_uuid}, 'UNKNOWN', 'Unknown District', NULL, NULL, {placeholder_uuid}) ON CONFLICT DO NOTHING;\n")
+            f.write(f"INSERT INTO PostalCode (ID, PIRCode, PostalCodeName) VALUES ({placeholder_uuid}, '0000', 'Unknown Postal Code') ON CONFLICT DO NOTHING;\n")
+            f.write(f"INSERT INTO PollingStation (ID, PollingStationNumber, PollingStationName, PollingStationAddress, Settlement_ID, SettlementIndividualElectoralDistrict_ID, County_ID, NationalIndividualElectoralDistrict_ID) VALUES ({placeholder_uuid}, 'UNKNOWN', 'Unknown Polling Station', 'Unknown Address', {placeholder_uuid}, {placeholder_uuid}, {placeholder_uuid}, {placeholder_uuid}) ON CONFLICT DO NOTHING;\n")
+            f.write("\n")
+
             for table in tables:
                 logger.info(f"  Exporting {table} to SQL...")
                 export_table_to_postgresql(conn, table, f)

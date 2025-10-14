@@ -230,12 +230,15 @@ def export_canonical_addresses_optimized(
         if postgresql_file:
             for row in addresses:
                 # Helper function to format SQL values
-                def format_sql_value(value, is_uuid=False):
+                def format_sql_value(value, is_uuid=False, allow_empty_string=False):
                     if is_uuid:
                         uuid_val = to_uuid3(value)
                         return f"'{uuid_val}'" if uuid_val else "NULL"
-                    elif value is None or value == "":
+                    elif value is None:
                         return "NULL"
+                    elif value == "":
+                        # For NOT NULL columns, return empty string instead of NULL
+                        return "''" if allow_empty_string else "NULL"
                     elif isinstance(value, str):
                         return f"'{value.replace("'", "''")}'"
                     else:
@@ -246,12 +249,12 @@ def export_canonical_addresses_optimized(
                     format_sql_value(row[0], is_uuid=True),  # ID
                     format_sql_value(row[2]),  # Sequence
                     format_sql_value(row[3]),  # OriginalOrder
-                    format_sql_value(row[4]),  # FullAddress
-                    format_sql_value(row[5] or ""),  # PublicSpaceName
-                    format_sql_value(row[6] or ""),  # PublicSpaceType
-                    format_sql_value(row[7]),  # HouseNumber
-                    format_sql_value(clean_zero_only_field(row[8])),  # Building
-                    format_sql_value(clean_zero_only_field(row[9])),  # Staircase
+                    format_sql_value(row[4], allow_empty_string=True),  # FullAddress (NOT NULL)
+                    format_sql_value(row[5] or "", allow_empty_string=True),  # PublicSpaceName (NOT NULL)
+                    format_sql_value(row[6] or "", allow_empty_string=True),  # PublicSpaceType (NOT NULL)
+                    format_sql_value(row[7], allow_empty_string=True),  # HouseNumber (NOT NULL)
+                    format_sql_value(clean_zero_only_field(row[8]), allow_empty_string=True),  # Building
+                    format_sql_value(clean_zero_only_field(row[9]), allow_empty_string=True),  # Staircase
                     format_sql_value(row[10], is_uuid=True),  # PostalCode_ID
                     format_sql_value(row[11], is_uuid=True),  # PollingStation_ID
                     format_sql_value(
