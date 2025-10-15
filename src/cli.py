@@ -1,4 +1,4 @@
-"""Command-line interface for the OEVK data processing pipeline."""
+"Command-line interface for the OEVK data processing pipeline."
 
 import argparse
 import datetime
@@ -28,8 +28,9 @@ from src.etl.export import (
     export_addresses_partitioned,
     export_tables_to_csv,
 )
-from src.etl.export_canonical_v2 import export_canonical_addresses_with_uuid
 from src.etl.export_canonical_v3 import export_canonical_addresses_optimized
+from src.etl.postgresql_verify import verify_and_dump_postgresql
+from src.etl.postgresql_dump import export_dump, import_dump
 from src.etl.ingest import download_sources, load_staging_data
 from src.etl.transform_optimized import transform_all_optimized
 from src.utils.config import Config
@@ -196,6 +197,11 @@ Examples:
     )
     run_parser.add_argument("--run-tag", help="Custom run tag (default: timestamp)")
     run_parser.add_argument(
+        "--skip-postgresql-export",
+        action="store_true",
+        help="Skip PostgreSQL export (only generate CSV files)",
+    )
+    run_parser.add_argument(
         "--chunk-size",
         type=int,
         default=50000,
@@ -241,6 +247,11 @@ Examples:
     )
     export_parser.add_argument("--run-tag", help="Custom run tag (default: timestamp)")
     export_parser.add_argument(
+        "--skip-postgresql-export",
+        action="store_true",
+        help="Skip PostgreSQL export (only generate CSV files)",
+    )
+    export_parser.add_argument(
         "--export-original-addresses",
         action="store_true",
         help="Export OriginalAddress CSV files (default: only canonical addresses exported)",
@@ -270,6 +281,123 @@ Examples:
         "--use-symlinks",
         action="store_true",
         help="Create symlinks instead of copying files (Unix-only, auto-detected by default)",
+    )
+
+    # Database setup command
+    db_parser = subparsers.add_parser(
+        "db", help="Manage database operations (e.g., setup PostgreSQL)"
+    )
+    db_subparsers = db_parser.add_subparsers(dest="db_command", help="Database command")
+
+    # db setup command
+    setup_parser = db_subparsers.add_parser(
+        "setup", help="Setup local PostgreSQL database via Docker"
+    )
+    setup_parser.add_argument(
+        "--ddl-script",
+        default="exports/schema.sql",
+        help="Path to DDL script (default: exports/schema.sql)",
+    )
+    setup_parser.add_argument(
+        "--dml-script",
+        default="exports/data.sql",
+        help="Path to DML script (default: exports/data.sql)",
+    )
+    setup_parser.add_argument(
+        "--force-recreate",
+        action="store_true",
+        help="Force recreation of Docker container",
+    )
+
+    # db export-dump command
+    export_dump_parser = db_subparsers.add_parser(
+        "export-dump", help="Export PostgreSQL database to gzipped dump file"
+    )
+    export_dump_parser.add_argument(
+        "--output-dir",
+        default="exports",
+        help="Output directory for dump file (default: exports)",
+    )
+    export_dump_parser.add_argument(
+        "--container-name",
+        default="oevk",
+        help="Docker container name (default: oevk)",
+    )
+    export_dump_parser.add_argument(
+        "--no-docker",
+        action="store_true",
+        help="Use local pg_dump instead of Docker container",
+    )
+    export_dump_parser.add_argument(
+        "--host",
+        default="localhost",
+        help="PostgreSQL host (default: localhost, only with --no-docker)",
+    )
+    export_dump_parser.add_argument(
+        "--port",
+        type=int,
+        default=5432,
+        help="PostgreSQL port (default: 5432, only with --no-docker)",
+    )
+    export_dump_parser.add_argument(
+        "--database",
+        default="oevk",
+        help="Database name (default: oevk)",
+    )
+    export_dump_parser.add_argument(
+        "--user",
+        default="oevk",
+        help="PostgreSQL user (default: oevk)",
+    )
+    export_dump_parser.add_argument(
+        "--password",
+        default="oevk",
+        help="PostgreSQL password (default: oevk)",
+    )
+
+    # db import-dump command
+    import_dump_parser = db_subparsers.add_parser(
+        "import-dump", help="Import gzipped PostgreSQL dump file"
+    )
+    import_dump_parser.add_argument(
+        "dump_file",
+        help="Path to .sql.gz dump file to import",
+    )
+    import_dump_parser.add_argument(
+        "--container-name",
+        default="oevk",
+        help="Docker container name (default: oevk)",
+    )
+    import_dump_parser.add_argument(
+        "--no-docker",
+        action="store_true",
+        help="Use local psql instead of Docker container",
+    )
+    import_dump_parser.add_argument(
+        "--host",
+        default="localhost",
+        help="PostgreSQL host (default: localhost, only with --no-docker)",
+    )
+    import_dump_parser.add_argument(
+        "--port",
+        type=int,
+        default=5432,
+        help="PostgreSQL port (default: 5432, only with --no-docker)",
+    )
+    import_dump_parser.add_argument(
+        "--database",
+        default="oevk",
+        help="Database name (default: oevk)",
+    )
+    import_dump_parser.add_argument(
+        "--user",
+        default="oevk",
+        help="PostgreSQL user (default: oevk)",
+    )
+    import_dump_parser.add_argument(
+        "--password",
+        default="oevk",
+        help="PostgreSQL password (default: oevk)",
     )
 
     # Release commands (if available)
@@ -450,6 +578,8 @@ Examples:
         run_pipeline(args)
     elif args.command == "export":
         export_data(args)
+    elif args.command == "db":
+        handle_db_command(args)
     elif args.command == "release" and RELEASE_AVAILABLE:
         handle_release_command(args)
     else:
@@ -516,11 +646,23 @@ def export_data(args):
             export_tables = True
             export_addresses = True
 
+        # Determine export formats based on flag
+        skip_postgresql = getattr(args, "skip_postgresql_export", False)
+        formats = ["csv"] if skip_postgresql else ["csv", "postgresql"]
+
+        if skip_postgresql:
+            logger.info("PostgreSQL export disabled (--skip-postgresql-export)")
+
         # Export entity tables
         if export_tables:
             logger.info("=== EXPORTING ENTITY TABLES ===")
-            export_tables_to_csv(conn, args.output_dir, run_tag)
+            export_tables_to_csv(
+                conn, args.output_dir, run_tag, formats=formats
+            )
             logger.info("Entity tables export completed")
+
+        # Flag to track if PostgreSQL export was done
+        postgresql_exported = export_tables and not skip_postgresql
 
         # Export addresses
         if export_addresses:
@@ -533,7 +675,10 @@ def export_data(args):
 
             # Export canonical (deduplicated) addresses with UUID v3 (optimized)
             logger.info("Exporting canonical addresses (optimized single-query)")
-            export_canonical_addresses_optimized(conn, args.output_dir, run_tag)
+            export_canonical_addresses_optimized(
+                conn, args.output_dir, run_tag, formats=formats
+            )
+            postgresql_exported = postgresql_exported or (not skip_postgresql)
 
             # Optionally export all original addresses (for debugging/analysis)
             if args.export_original_addresses:
@@ -558,6 +703,23 @@ def export_data(args):
         )
 
         conn.close()
+
+        # Verify PostgreSQL import and create gzipped dump
+        if postgresql_exported:
+            logger.info("")
+            logger.info("=== POSTGRESQL VERIFICATION AND DUMP ===")
+            try:
+                dump_path = verify_and_dump_postgresql(
+                    exports_dir=args.output_dir,
+                    container_name="oevk-verify-export",
+                    cleanup=True,
+                )
+                if dump_path:
+                    logger.info(f"✓ PostgreSQL dump created: {dump_path}")
+            except Exception as e:
+                logger.warning(f"PostgreSQL verification failed (non-fatal): {e}")
+                logger.warning("Export completed but gzipped dump was not created")
+
         logger.info("✓ Export completed successfully")
 
     except Exception as e:
@@ -716,11 +878,22 @@ def run_pipeline(args):
                 0
             ]
 
-            export_tables_to_csv(conn, args.output_dir, run_tag)
+            # Determine export formats based on flag
+            skip_postgresql = getattr(args, "skip_postgresql_export", False)
+            formats = ["csv"] if skip_postgresql else ["csv", "postgresql"]
+
+            if skip_postgresql:
+                logger.info("PostgreSQL export disabled (--skip-postgresql-export)")
+
+            export_tables_to_csv(
+                conn, args.output_dir, run_tag, formats=formats
+            )
 
             # Export canonical (deduplicated) addresses with UUID v3 (optimized)
             logger.info("Exporting canonical addresses (optimized single-query)")
-            export_canonical_addresses_optimized(conn, args.output_dir, run_tag)
+            export_canonical_addresses_optimized(
+                conn, args.output_dir, run_tag, formats=formats
+            )
 
             # Optionally export all original addresses (for debugging/analysis)
             if args.export_original_addresses:
@@ -766,6 +939,22 @@ def run_pipeline(args):
                 f"⚠️ NFR-002 NON-COMPLIANT: Pipeline took {total_duration:.2f}s (target: ≤{nfr_002_target}s)"
             )
 
+        # Verify PostgreSQL import and create gzipped dump (after export stage)
+        if "export" in stages and not skip_postgresql:
+            logger.info("")
+            logger.info("=== POSTGRESQL VERIFICATION AND DUMP ===")
+            try:
+                dump_path = verify_and_dump_postgresql(
+                    exports_dir=args.output_dir,
+                    container_name="oevk-verify-pipeline",
+                    cleanup=True,
+                )
+                if dump_path:
+                    logger.info(f"✓ PostgreSQL dump created: {dump_path}")
+            except Exception as e:
+                logger.warning(f"PostgreSQL verification failed (non-fatal): {e}")
+                logger.warning("Pipeline completed but gzipped dump was not created")
+
         logger.info("Pipeline completed successfully")
 
     except Exception as e:
@@ -775,6 +964,19 @@ def run_pipeline(args):
     finally:
         # Close database connection
         conn.close()
+
+
+def handle_db_command(args):
+    """Handle database subcommands."""
+    if args.db_command == "setup":
+        setup_database(args)
+    elif args.db_command == "export-dump":
+        export_database_dump(args)
+    elif args.db_command == "import-dump":
+        import_database_dump(args)
+    else:
+        print("Unknown database command. Use 'db setup', 'db export-dump', or 'db import-dump'.")
+        sys.exit(1)
 
 
 def handle_release_command(args):
@@ -977,6 +1179,200 @@ def handle_release_command(args):
 
     except Exception as e:
         logger.error(f"Release command failed: {e}")
+        sys.exit(1)
+
+
+def setup_database(args):
+    """Setup PostgreSQL database in Docker."""
+    logger.info("Setting up PostgreSQL database...")
+
+    config = Config()
+    pg_config = config.get("postgresql")
+
+    container_name = "oevk"
+
+    # Check if container exists
+    try:
+        result = subprocess.run(
+            [
+                "docker",
+                "ps",
+                "-a",
+                "--filter",
+                f"name={container_name}",
+                "--format",
+                "{{.Names}}",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        container_exists = container_name in result.stdout.strip().split("\n")
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        logger.error(
+            "Docker is not running or not installed. Please start Docker and try again."
+        )
+        sys.exit(1)
+
+    if container_exists and args.force_recreate:
+        logger.info(f"Removing existing container: {container_name}")
+        subprocess.run(["docker", "rm", "-f", container_name], check=True)
+        container_exists = False
+
+    if not container_exists:
+        logger.info(f"Creating Docker container: {container_name}")
+        docker_command = [
+            "docker",
+            "run",
+            "--name",
+            container_name,
+            "-e",
+            f"POSTGRES_PASSWORD={pg_config['password']}",
+            "-e",
+            f"POSTGRES_USER={pg_config['user']}",
+            "-e",
+            f"POSTGRES_DB={pg_config['db']}",
+            "-d",
+            "-p",
+            f"{pg_config['port']}:5432",
+            "postgres",
+        ]
+        subprocess.run(docker_command, check=True)
+        logger.info("Waiting for PostgreSQL to be ready...")
+        time.sleep(10)  # Wait for the database to initialize
+    else:
+        logger.info(f"Container {container_name} already exists. Starting it.")
+        subprocess.run(["docker", "start", container_name], check=True)
+        logger.info("Waiting for PostgreSQL to be ready...")
+        time.sleep(5)
+
+    # Connect to the database and execute scripts
+    try:
+        import psycopg2
+        from psycopg2 import sql
+    except ImportError:
+        logger.error(
+            "psycopg2-binary is not installed. Please install it with: pip install psycopg2-binary"
+        )
+        sys.exit(1)
+
+    conn = None
+    for i in range(5):
+        try:
+            conn = psycopg2.connect(
+                host=pg_config["host"],
+                port=pg_config["port"],
+                dbname=pg_config["db"],
+                user=pg_config["user"],
+                password=pg_config["password"],
+            )
+            break
+        except psycopg2.OperationalError:
+            logger.info(f"Waiting for database connection... ({i + 1}/5)")
+            time.sleep(5)
+
+    if not conn:
+        logger.error("Could not connect to the PostgreSQL database.")
+        sys.exit(1)
+
+    conn.autocommit = True
+    cur = conn.cursor()
+
+    # Execute DDL script
+    if os.path.exists(args.ddl_script):
+        logger.info(f"Executing DDL script: {args.ddl_script}")
+        with open(args.ddl_script, "r") as f:
+            cur.execute(f.read())
+        logger.info("DDL script executed successfully.")
+    else:
+        logger.warning(f"DDL script not found at: {args.ddl_script}")
+
+    cur.close()
+    conn.close()
+
+    # Execute DML script using psql via docker for better memory efficiency with large files
+    if os.path.exists(args.dml_script):
+        logger.info(f"Executing DML script: {args.dml_script}")
+        logger.info("Using psql for efficient loading of large data file...")
+
+        # Get absolute path for Docker volume mounting
+        dml_abs_path = os.path.abspath(args.dml_script)
+
+        # Use docker exec with psql to load the SQL file
+        psql_command = [
+            "docker", "exec", "-i", container_name,
+            "psql",
+            "-U", pg_config["user"],
+            "-d", pg_config["db"],
+            "-f", f"/tmp/{os.path.basename(args.dml_script)}"
+        ]
+
+        # First, copy the file into the container
+        copy_command = [
+            "docker", "cp",
+            dml_abs_path,
+            f"{container_name}:/tmp/{os.path.basename(args.dml_script)}"
+        ]
+
+        logger.info("Copying DML script to container...")
+        subprocess.run(copy_command, check=True)
+
+        logger.info("Loading data into database (this may take a while for large files)...")
+        result = subprocess.run(psql_command, capture_output=True, text=True)
+
+        if result.returncode != 0:
+            logger.error(f"Failed to execute DML script: {result.stderr}")
+            sys.exit(1)
+
+        logger.info("DML script executed successfully.")
+
+        # Clean up the temporary file in the container
+        cleanup_command = [
+            "docker", "exec", container_name,
+            "rm", f"/tmp/{os.path.basename(args.dml_script)}"
+        ]
+        subprocess.run(cleanup_command, check=False)
+    else:
+        logger.warning(f"DML script not found at: {args.dml_script}")
+
+    logger.info("Database setup completed successfully.")
+
+
+def export_database_dump(args):
+    """Export PostgreSQL database to gzipped dump file."""
+    try:
+        dump_path = export_dump(
+            host=args.host,
+            port=args.port,
+            database=args.database,
+            user=args.user,
+            password=args.password,
+            output_dir=args.output_dir,
+            use_docker=not args.no_docker,
+            container_name=args.container_name,
+        )
+        logger.info(f"✅ Dump exported successfully: {dump_path}")
+    except Exception as e:
+        logger.error(f"❌ Failed to export dump: {e}")
+        sys.exit(1)
+
+
+def import_database_dump(args):
+    """Import gzipped PostgreSQL dump file."""
+    try:
+        import_dump(
+            dump_path=args.dump_file,
+            host=args.host,
+            port=args.port,
+            database=args.database,
+            user=args.user,
+            password=args.password,
+            use_docker=not args.no_docker,
+            container_name=args.container_name,
+        )
+        logger.info("✅ Dump imported successfully")
+    except Exception as e:
+        logger.error(f"❌ Failed to import dump: {e}")
         sys.exit(1)
 
 

@@ -234,6 +234,166 @@ class FilePackager:
             "database_file": db_file_used,  # Track which database file was used
         }
 
+    def package_postgresql_files(
+        self, data_dir: str, release_tag: str, force: bool = False
+    ) -> Dict[str, Any]:
+        """Package PostgreSQL SQL files into a compressed archive.
+
+        Args:
+            data_dir: Directory containing schema.sql and data.sql files
+            release_tag: Release tag for naming
+            force: If True, recreate even if archive exists
+
+        Returns:
+            Dictionary containing artifact metadata
+        """
+        data_path = Path(data_dir)
+
+        archive_name = ReleaseUtils.generate_archive_name("postgresql", release_tag)
+        archive_path = self.output_dir / archive_name
+
+        # Check if archive already exists
+        if archive_path.exists() and not force:
+            file_size = archive_path.stat().st_size
+            checksum = self._calculate_checksum(archive_path)
+            self.logger.logger.info(
+                f"PostgreSQL archive already exists, skipping creation: {archive_name} ({file_size} bytes)"
+            )
+            return {
+                "artifact_type": "postgresql",
+                "file_path": str(archive_path),
+                "file_size": file_size,
+                "checksum": checksum,
+                "created_at": datetime.now(),
+                "skipped": True,
+            }
+
+        # Find schema.sql and data.sql
+        schema_path = data_path / "schema.sql"
+        data_sql_path = data_path / "data.sql"
+
+        if not schema_path.exists():
+            raise FileNotFoundError(f"PostgreSQL schema.sql not found in {data_dir}")
+
+        if not data_sql_path.exists():
+            raise FileNotFoundError(f"PostgreSQL data.sql not found in {data_dir}")
+
+        # Get loader script and requirements from templates
+        templates_dir = Path(__file__).parent / "templates"
+        loader_script = templates_dir / "load_postgresql.py"
+        requirements_txt = templates_dir / "requirements.txt"
+
+        # Create ZIP archive
+        self.logger.logger.info(f"Creating PostgreSQL archive: {archive_name}")
+        with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zipf:
+            zipf.write(schema_path, "schema.sql")
+            zipf.write(data_sql_path, "data.sql")
+            zipf.write(loader_script, "load_postgresql.py")
+            zipf.write(requirements_txt, "requirements.txt")
+
+            # Add README with instructions
+            readme_content = """# OEVK PostgreSQL Database
+
+This archive contains PostgreSQL-compatible SQL files for the OEVK database.
+
+## Contents
+
+- `schema.sql`: Database schema (DDL) with UUID types and trigram indexes
+- `data.sql`: Data INSERT statements with UUID values
+- `load_postgresql.py`: Python loader script for easy database setup
+- `requirements.txt`: Python dependencies for the loader script
+- `README.md`: This file
+
+## Quick Start with Loader Script
+
+The easiest way to load the data is using the included Python loader script:
+
+### Option 1: Load to Docker PostgreSQL (Automatic Setup)
+
+```bash
+pip install -r requirements.txt
+python load_postgresql.py --docker
+```
+
+This will:
+1. Create and start a PostgreSQL Docker container
+2. Load schema.sql and data.sql automatically
+3. Print connection details
+
+### Option 2: Load to External PostgreSQL
+
+```bash
+pip install -r requirements.txt
+python load_postgresql.py --host localhost --user postgres --password mypass --database oevk
+```
+
+Or use environment variables:
+```bash
+export POSTGRES_HOST=localhost
+export POSTGRES_USER=postgres
+export POSTGRES_PASSWORD=mypass
+export POSTGRES_DB=oevk
+python load_postgresql.py
+```
+
+## Manual Import Instructions
+
+If you prefer to import manually:
+
+1. Create a PostgreSQL database:
+   ```sql
+   CREATE DATABASE oevk;
+   ```
+
+2. Import the schema:
+   ```bash
+   psql -d oevk -f schema.sql
+   ```
+
+3. Import the data:
+   ```bash
+   psql -d oevk -f data.sql
+   ```
+
+## Advanced Features
+
+### Text Search with Trigram Indexes
+
+The database includes pg_trgm indexes for efficient substring searches:
+
+```sql
+-- Search for addresses containing 'utca'
+SELECT * FROM Address WHERE FullAddress ILIKE '%utca%';
+
+-- Search for addresses containing 'Bar'
+SELECT * FROM CanonicalAddress WHERE FullAddress ILIKE '%Bar%';
+```
+
+## Notes
+
+- All ID columns use PostgreSQL UUID type
+- ID values are converted from xxhash64 to UUID v3 format
+- Trigram indexes (pg_trgm) enable fast LIKE/ILIKE queries
+- The data.sql file may be large; loader script handles this efficiently
+"""
+            zipf.writestr("README.md", readme_content)
+
+        # Calculate file size and checksum
+        file_size = archive_path.stat().st_size
+        checksum = self._calculate_checksum(archive_path)
+
+        self.logger.logger.info(
+            f"PostgreSQL archive created: {archive_name} ({file_size} bytes)"
+        )
+
+        return {
+            "artifact_type": "postgresql",
+            "file_path": str(archive_path),
+            "file_size": file_size,
+            "checksum": checksum,
+            "created_at": datetime.now(),
+        }
+
     def package_all(self, data_dir: str, release_tag: str) -> List[Dict[str, Any]]:
         """Package all data files into compressed archives."""
         artifacts = []

@@ -41,6 +41,7 @@ def export_canonical_addresses_optimized(
     db_connection: duckdb.DuckDBPyConnection,
     export_dir: str,
     run_tag: str,
+    formats: list = None,
 ) -> None:
     """Export canonical addresses with single-query optimization.
 
@@ -51,8 +52,14 @@ def export_canonical_addresses_optimized(
         db_connection: An active DuckDB connection.
         export_dir: The directory to save CSV files.
         run_tag: The run tag to include in filenames.
+        formats: List of export formats. Defaults to ["csv"]. Can include "csv" and/or "postgresql".
     """
-    logger.info(f"Exporting canonical addresses (optimized single-query approach)")
+    if formats is None:
+        formats = ["csv"]
+
+    logger.info(
+        f"Exporting canonical addresses (optimized single-query approach) to {', '.join(formats)}"
+    )
 
     # Create Address directory
     address_dir = os.path.join(export_dir, f"{run_tag}_Address")
@@ -92,9 +99,10 @@ def export_canonical_addresses_optimized(
         ),
         postal_codes AS (
             SELECT DISTINCT
-                CanonicalAddressID,
-                FIRST_VALUE(PIRCode) OVER (PARTITION BY CanonicalAddressID ORDER BY PIRCode) as PIRCode
-            FROM AddressPIRCodes
+                apc.CanonicalAddressID,
+                FIRST_VALUE(pc.ID) OVER (PARTITION BY apc.CanonicalAddressID ORDER BY apc.PIRCode) as PostalCodeID
+            FROM AddressPIRCodes apc
+            LEFT JOIN PostalCode pc ON apc.PIRCode = pc.PostalCode
         ),
         polling_stations AS (
             SELECT DISTINCT
@@ -105,20 +113,20 @@ def export_canonical_addresses_optimized(
         SELECT
             ca.ID as ID,
             ca.SettlementName,
-            MIN(a.Sequence) as Sequence,
-            MIN(a.OriginalOrder) as OriginalOrder,
+            COALESCE(MIN(a.Sequence), 0) as Sequence,
+            COALESCE(MIN(a.OriginalOrder), 0) as OriginalOrder,
             ca.FullAddress,
             ca.StreetName as PublicSpaceName,
-            ad.PublicSpaceType,
+            COALESCE(ad.PublicSpaceType, '') as PublicSpaceType,
             ca.HouseNumber,
             ad.Building,
             ad.Staircase,
-            pc.PIRCode as PostalCode_ID,
-            ps.PollingStationID as PollingStation_ID,
-            ad.SettlementIndividualElectoralDistrict_ID,
-            ad.County_ID,
-            ad.Settlement_ID,
-            ad.NationalIndividualElectoralDistrict_ID,
+            COALESCE(pc.PostalCodeID, '00000000-0000-0000-0000-000000000000') as PostalCode_ID,
+            COALESCE(ps.PollingStationID, '00000000-0000-0000-0000-000000000000') as PollingStation_ID,
+            COALESCE(ad.SettlementIndividualElectoralDistrict_ID, '00000000-0000-0000-0000-000000000000') as SettlementIndividualElectoralDistrict_ID,
+            COALESCE(ad.County_ID, '00000000-0000-0000-0000-000000000000') as County_ID,
+            COALESCE(ad.Settlement_ID, '00000000-0000-0000-0000-000000000000') as Settlement_ID,
+            COALESCE(ad.NationalIndividualElectoralDistrict_ID, '00000000-0000-0000-0000-000000000000') as NationalIndividualElectoralDistrict_ID,
             COUNT(DISTINCT am.OriginalAddressID) as OriginalAddressCount
         FROM CanonicalAddress ca
         LEFT JOIN AddressMapping am ON ca.ID = am.CanonicalAddressID
@@ -129,7 +137,7 @@ def export_canonical_addresses_optimized(
         GROUP BY ca.ID, ca.SettlementName, ca.FullAddress, ca.StreetName, ca.HouseNumber,
                  ad.PublicSpaceType, ad.Building, ad.Staircase,
                  ad.SettlementIndividualElectoralDistrict_ID, ad.County_ID, ad.Settlement_ID,
-                 ad.NationalIndividualElectoralDistrict_ID, pc.PIRCode, ps.PollingStationID
+                 ad.NationalIndividualElectoralDistrict_ID, pc.PostalCodeID, ps.PollingStationID
         ORDER BY ca.SettlementName, ca.FullAddress
     """).fetchall()
 
@@ -145,61 +153,129 @@ def export_canonical_addresses_optimized(
 
     logger.info(f"Partitioned into {len(settlement_data)} settlements")
 
-    # Write CSV files
-    logger.info("Writing CSV files...")
+    # Write files based on requested formats
     write_start = time.time()
     total_written = 0
     files_written = 0
 
+    # Open PostgreSQL data.sql file if needed (append mode)
+    postgresql_file = None
+    if "postgresql" in formats:
+        data_path = os.path.join(export_dir, "data.sql")
+        postgresql_file = open(data_path, "a", encoding="utf-8")
+        postgresql_file.write("\n-- Canonical Addresses (deduplicated)\n")
+        postgresql_file.write("-- Table: Address\n\n")
+        logger.info("Appending canonical addresses to data.sql...")
+
+    # Write CSV files if requested
+    if "csv" in formats:
+        logger.info("Writing CSV files...")
+
     for settlement_name, addresses in settlement_data.items():
         settlement_code = settlement_codes.get(settlement_name, "000")
         safe_name = settlement_name.replace("/", "_").replace("\\", "_")
-        filename = f"Address_{settlement_code}_{safe_name}.csv"
-        file_path = os.path.join(address_dir, filename)
 
-        with open(file_path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow(
-                [
-                    "ID",
-                    "Sequence",
-                    "OriginalOrder",
-                    "FullAddress",
-                    "PublicSpaceName",
-                    "PublicSpaceType",
-                    "HouseNumber",
-                    "Building",
-                    "Staircase",
-                    "PostalCode_ID",
-                    "PollingStation_ID",
-                    "SettlementIndividualElectoralDistrict_ID",
-                    "County_ID",
-                    "Settlement_ID",
-                    "NationalIndividualElectoralDistrict_ID",
-                    "OriginalAddressCount",
-                ]
-            )
+        # Write CSV file if requested
+        if "csv" in formats:
+            filename = f"Address_{settlement_code}_{safe_name}.csv"
+            file_path = os.path.join(address_dir, filename)
 
-            for row in addresses:
+            with open(file_path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
                 writer.writerow(
                     [
-                        to_uuid3(row[0]),  # ID
-                        row[2],  # Sequence
-                        row[3],  # OriginalOrder
-                        row[4],  # FullAddress
-                        row[5] or "",  # PublicSpaceName
-                        row[6] or "",  # PublicSpaceType
-                        row[7],  # HouseNumber
-                        clean_zero_only_field(row[8]),  # Building
-                        clean_zero_only_field(row[9]),  # Staircase
-                        to_uuid3(row[10]),  # PostalCode_ID
-                        to_uuid3(row[11]),  # PollingStation_ID
-                        to_uuid3(row[12]),  # SettlementIndividualElectoralDistrict_ID
-                        to_uuid3(row[13]),  # County_ID
-                        to_uuid3(row[14]),  # Settlement_ID
-                        to_uuid3(row[15]),  # NationalIndividualElectoralDistrict_ID
-                        row[16],  # OriginalAddressCount
+                        "ID",
+                        "Sequence",
+                        "OriginalOrder",
+                        "FullAddress",
+                        "PublicSpaceName",
+                        "PublicSpaceType",
+                        "HouseNumber",
+                        "Building",
+                        "Staircase",
+                        "PostalCode_ID",
+                        "PollingStation_ID",
+                        "SettlementIndividualElectoralDistrict_ID",
+                        "County_ID",
+                        "Settlement_ID",
+                        "NationalIndividualElectoralDistrict_ID",
+                        "OriginalAddressCount",
                     ]
+                )
+
+                for row in addresses:
+                    writer.writerow(
+                        [
+                            to_uuid3(row[0]),  # ID
+                            row[2],  # Sequence
+                            row[3],  # OriginalOrder
+                            row[4],  # FullAddress
+                            row[5] or "",  # PublicSpaceName
+                            row[6] or "",  # PublicSpaceType
+                            row[7],  # HouseNumber
+                            clean_zero_only_field(row[8]),  # Building
+                            clean_zero_only_field(row[9]),  # Staircase
+                            to_uuid3(row[10]),  # PostalCode_ID
+                            to_uuid3(row[11]),  # PollingStation_ID
+                            to_uuid3(
+                                row[12]
+                            ),  # SettlementIndividualElectoralDistrict_ID
+                            to_uuid3(row[13]),  # County_ID
+                            to_uuid3(row[14]),  # Settlement_ID
+                            to_uuid3(row[15]),  # NationalIndividualElectoralDistrict_ID
+                            row[16],  # OriginalAddressCount
+                        ]
+                    )
+
+        # Write PostgreSQL INSERT statements if requested
+        if postgresql_file:
+            for row in addresses:
+                # Helper function to format SQL values
+                def format_sql_value(value, is_uuid=False, allow_empty_string=False):
+                    if is_uuid:
+                        uuid_val = to_uuid3(value)
+                        return f"'{uuid_val}'" if uuid_val else "NULL"
+                    elif value is None:
+                        return "NULL"
+                    elif value == "":
+                        # For NOT NULL columns, return empty string instead of NULL
+                        return "''" if allow_empty_string else "NULL"
+                    elif isinstance(value, str):
+                        return f"'{value.replace("'", "''")}'"
+                    else:
+                        return str(value)
+
+                # Format values for INSERT statement
+                values = [
+                    format_sql_value(row[0], is_uuid=True),  # ID
+                    format_sql_value(row[2]),  # Sequence
+                    format_sql_value(row[3]),  # OriginalOrder
+                    format_sql_value(row[4], allow_empty_string=True),  # FullAddress (NOT NULL)
+                    format_sql_value(row[5] or "", allow_empty_string=True),  # PublicSpaceName (NOT NULL)
+                    format_sql_value(row[6] or "", allow_empty_string=True),  # PublicSpaceType (NOT NULL)
+                    format_sql_value(row[7], allow_empty_string=True),  # HouseNumber (NOT NULL)
+                    format_sql_value(clean_zero_only_field(row[8]), allow_empty_string=True),  # Building
+                    format_sql_value(clean_zero_only_field(row[9]), allow_empty_string=True),  # Staircase
+                    format_sql_value(row[10], is_uuid=True),  # PostalCode_ID
+                    format_sql_value(row[11], is_uuid=True),  # PollingStation_ID
+                    format_sql_value(
+                        row[12], is_uuid=True
+                    ),  # SettlementIndividualElectoralDistrict_ID
+                    format_sql_value(row[13], is_uuid=True),  # County_ID
+                    format_sql_value(row[14], is_uuid=True),  # Settlement_ID
+                    format_sql_value(
+                        row[15], is_uuid=True
+                    ),  # NationalIndividualElectoralDistrict_ID
+                    format_sql_value(row[16]),  # OriginalAddressCount
+                ]
+
+                values_str = ", ".join(values)
+                postgresql_file.write(
+                    f"INSERT INTO Address (ID, Sequence, OriginalOrder, FullAddress, PublicSpaceName, "
+                    f"PublicSpaceType, HouseNumber, Building, Staircase, PostalCode_ID, PollingStation_ID, "
+                    f"SettlementIndividualElectoralDistrict_ID, County_ID, Settlement_ID, "
+                    f"NationalIndividualElectoralDistrict_ID, OriginalAddressCount) "
+                    f"VALUES ({values_str}) ON CONFLICT DO NOTHING;\n"
                 )
 
         total_written += len(addresses)
@@ -210,6 +286,11 @@ def export_canonical_addresses_optimized(
             logger.info(
                 f"Progress: {files_written}/{len(settlement_data)} files, {total_written:,} addresses"
             )
+
+    # Close PostgreSQL file if it was opened
+    if postgresql_file:
+        postgresql_file.close()
+        logger.info("PostgreSQL data.sql file closed")
 
     write_time = time.time() - write_start
     total_time = time.time() - start_time

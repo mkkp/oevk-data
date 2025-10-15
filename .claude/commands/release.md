@@ -66,5 +66,5 @@ For organization repositories, use **classic tokens** (not fine-grained):
 - Always validate data before creating a release
 - Use `--draft` flag for testing releases
 - Use `--skip-upload` for local testing without GitHub upload
-- Release artifacts include CSV archive and database archive
+- Release artifacts include a CSV archive, a database archive, and a PostgreSQL SQL archive.
 - Tags format: YYYYMMDD-HHMM (auto-generated from current timestamp)

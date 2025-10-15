@@ -293,6 +293,135 @@ class TestFilePackager:
             assert db_artifact["file_size"] > 0
             assert len(db_artifact["checksum"]) == 64
 
+    def test_package_postgresql_files_success(self):
+        """Test packaging PostgreSQL SQL files successfully."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with tempfile.TemporaryDirectory() as data_dir:
+                data_path = Path(data_dir)
+
+                # Create PostgreSQL SQL files
+                schema_content = """-- PostgreSQL Schema
+CREATE TABLE test (id UUID PRIMARY KEY);
+"""
+                data_content = """-- PostgreSQL Data
+INSERT INTO test (id) VALUES ('550e8400-e29b-41d4-a716-446655440000');
+"""
+                (data_path / "schema.sql").write_text(schema_content)
+                (data_path / "data.sql").write_text(data_content)
+
+                packager = FilePackager(temp_dir)
+                artifact = packager.package_postgresql_files(data_dir, "test-release")
+
+                # Verify artifact metadata
+                assert artifact["artifact_type"] == "postgresql"
+                assert "file_path" in artifact
+                assert artifact["file_size"] > 0
+                assert len(artifact["checksum"]) == 64
+                assert "created_at" in artifact
+
+                # Verify ZIP file exists
+                zip_path = Path(artifact["file_path"])
+                assert zip_path.exists()
+                assert zip_path.name.startswith("oevk-postgresql-")
+                assert zip_path.name.endswith(".zip")
+
+                # Verify ZIP contents
+                with zipfile.ZipFile(zip_path, "r") as zipf:
+                    names = zipf.namelist()
+                    assert "schema.sql" in names
+                    assert "data.sql" in names
+                    assert "README.md" in names
+
+                    # Verify file contents
+                    assert zipf.read("schema.sql").decode() == schema_content
+                    assert zipf.read("data.sql").decode() == data_content
+
+                    # Verify README contains instructions
+                    readme = zipf.read("README.md").decode()
+                    assert "PostgreSQL" in readme
+                    assert "psql" in readme
+
+    def test_package_postgresql_files_missing_schema(self):
+        """Test packaging PostgreSQL files fails when schema.sql is missing."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with tempfile.TemporaryDirectory() as data_dir:
+                # Only create data.sql, not schema.sql
+                (Path(data_dir) / "data.sql").write_text("INSERT INTO test VALUES (1);")
+
+                packager = FilePackager(temp_dir)
+
+                with pytest.raises(FileNotFoundError) as exc_info:
+                    packager.package_postgresql_files(data_dir, "test-release")
+
+                assert "schema.sql" in str(exc_info.value)
+
+    def test_package_postgresql_files_missing_data(self):
+        """Test packaging PostgreSQL files fails when data.sql is missing."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with tempfile.TemporaryDirectory() as data_dir:
+                # Only create schema.sql, not data.sql
+                (Path(data_dir) / "schema.sql").write_text(
+                    "CREATE TABLE test (id INT);"
+                )
+
+                packager = FilePackager(temp_dir)
+
+                with pytest.raises(FileNotFoundError) as exc_info:
+                    packager.package_postgresql_files(data_dir, "test-release")
+
+                assert "data.sql" in str(exc_info.value)
+
+    def test_package_postgresql_files_skip_if_exists(self):
+        """Test that PostgreSQL packaging skips if archive already exists."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with tempfile.TemporaryDirectory() as data_dir:
+                data_path = Path(data_dir)
+
+                # Create PostgreSQL SQL files
+                (data_path / "schema.sql").write_text("CREATE TABLE test (id INT);")
+                (data_path / "data.sql").write_text("INSERT INTO test VALUES (1);")
+
+                packager = FilePackager(temp_dir)
+
+                # First packaging
+                artifact1 = packager.package_postgresql_files(data_dir, "test-release")
+                checksum1 = artifact1["checksum"]
+
+                # Second packaging (should skip)
+                artifact2 = packager.package_postgresql_files(
+                    data_dir, "test-release", force=False
+                )
+
+                assert artifact2["skipped"] == True
+                assert artifact2["checksum"] == checksum1
+
+    def test_package_postgresql_files_force_rebuild(self):
+        """Test that PostgreSQL packaging rebuilds when force=True."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with tempfile.TemporaryDirectory() as data_dir:
+                data_path = Path(data_dir)
+
+                # Create PostgreSQL SQL files
+                (data_path / "schema.sql").write_text("CREATE TABLE test (id INT);")
+                (data_path / "data.sql").write_text("INSERT INTO test VALUES (1);")
+
+                packager = FilePackager(temp_dir)
+
+                # First packaging
+                artifact1 = packager.package_postgresql_files(data_dir, "test-release")
+
+                # Update data.sql
+                (data_path / "data.sql").write_text("INSERT INTO test VALUES (2);")
+
+                # Second packaging with force=True
+                artifact2 = packager.package_postgresql_files(
+                    data_dir, "test-release", force=True
+                )
+
+                assert "skipped" not in artifact2 or artifact2["skipped"] == False
+                # Checksums should differ because content changed
+                assert artifact2["checksum"] != artifact1["checksum"]
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
