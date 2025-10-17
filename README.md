@@ -966,9 +966,26 @@ The deduplication process identifies duplicate addresses based on formatted Hung
 - Input: `"Körtöltés", "utca", "000001", "D", ""`
 - Formatted: `"Körtöltés utca 1/D."`
 - These three source records become ONE canonical address:
-  - House: `"000001"`, Building: `"D"`, Staircase: `""`
+  - House: `"000001"`, Building: `"D"`, Staircase: `""` ← **Selected as canonical (structured format)**
   - House: `"000001"`, Building: `""`, Staircase: `"D"`
   - House: `"000001/D"`, Building: `""`, Staircase: `""`
+
+**Deduplication Priority** (new in v1.4):
+When multiple addresses map to the same canonical ID, the pipeline prioritizes **structured formats**:
+- **High Priority** (Score 100-120): Plain house number with separate building/staircase fields
+  - Example: House="1", Building="D" (score 110)
+- **Low Priority** (Score 50-65): Combined slash notation in house number field
+  - Example: House="1/D", Building="" (score 50)
+
+This ensures the canonical address uses the highest quality data structure available, improving data consistency and usability.
+
+### Coordinate Export (new in v1.4)
+
+Polling district boundaries (TEVK - SettlementIndividualElectoralDistrict) include coordinate columns:
+- **Center**: Coordinate center point (WKT POINT format)
+- **Polygon**: Coordinate polygon (WKT POLYGON format)
+
+These columns are exported to PostgreSQL and CSV formats, enabling geospatial analysis of electoral districts. The columns accept NULL values until actual coordinate data becomes available.
 
 ### ID Generation Strategy
 

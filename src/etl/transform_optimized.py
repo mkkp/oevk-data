@@ -66,7 +66,48 @@ def register_hash_functions(db_connection: duckdb.DuckDBPyConnection) -> None:
             CREATE OR REPLACE MACRO hash_postal_code_settlement_id(postal_code_id, settlement_id) AS lower(substring(md5(postal_code_id || '|' || settlement_id), 1, 16))
         """)
 
-        logger.debug("Hash functions registered as SQL macros using MD5")
+        # Utility function to trim leading zeros from address components
+        # Uses Python UDF for complex regex operations
+        def trim_leading_zeros_py(value):
+            """Trim leading zeros from address component strings."""
+            if not value:
+                return value
+
+            import re
+
+            # Handle range notation (e.g., "000001-00005" -> "1-5")
+            if '-' in value:
+                parts = value.split('-', 1)
+                if len(parts) == 2:
+                    left = parts[0].lstrip('0') or '0'
+                    right = parts[1].lstrip('0') or '0'
+                    return f"{left}-{right}"
+
+            # Handle slash notation (e.g., "000001/D" -> "1/D")
+            if '/' in value:
+                match = re.match(r'^(0*)(\d+)(/.*)?$', value)
+                if match:
+                    num = match.group(2) or '0'
+                    suffix = match.group(3) or ''
+                    return num + suffix
+
+            # Handle numeric only (e.g., "000001" -> "1")
+            if value.isdigit():
+                return value.lstrip('0') or '0'
+
+            # Non-numeric or mixed: return as-is
+            return value
+
+        # Check if function already exists before creating
+        try:
+            db_connection.create_function("trim_leading_zeros", trim_leading_zeros_py, return_type="VARCHAR")
+        except Exception as func_err:
+            if "already created" in str(func_err):
+                logger.debug("trim_leading_zeros function already exists, skipping")
+            else:
+                raise
+
+        logger.debug("Hash functions and utility macros registered as SQL macros using MD5")
     except Exception as e:
         if "Catalog write-write conflict" in str(e):
             logger.debug(
@@ -239,24 +280,20 @@ def transform_national_individual_electoral_districts(
     # Extract OEVK data from both sources
     db_connection.execute(
         """
-        INSERT INTO NationalIndividualElectoralDistrict (ID, OEVK, Name, Center, Polygon, County_ID)
+        INSERT INTO NationalIndividualElectoralDistrict (ID, OEVK, Name, County_ID)
         SELECT
             lower(substring(md5(sk.county_code || '|' || sk.oevk_code), 1, 16)) as ID,
             sk.oevk_code,
-            MAX(sk.settlement_name) || ' ' || sk.oevk_code as Name,
-            NULL as Center,  -- Will be populated from JSON if available
-            NULL as Polygon, -- Will be populated from JSON if available
+            c.CountyName || ' ' || sk.oevk_code as Name,
             c.ID as County_ID
         FROM staging_korzet sk
         JOIN County c ON sk.county_code = c.CountyCode
         WHERE sk.run_tag = ?
-        GROUP BY sk.county_code, sk.oevk_code, c.ID
+        GROUP BY sk.county_code, sk.oevk_code, c.ID, c.CountyName
         ON CONFLICT (County_ID, OEVK) DO NOTHING
     """,
         [run_tag],
     )
-
-    # TODO: Enhance with OEVK JSON data for Center and Polygon
 
     row_count = db_connection.execute(
         "SELECT COUNT(*) FROM NationalIndividualElectoralDistrict"
@@ -442,9 +479,9 @@ def transform_addresses_optimized(
                               COALESCE(building, ''), COALESCE(staircase, ''))) as FullAddress,
                 street_name as PublicSpaceName,
                 COALESCE(street_type, '') as PublicSpaceType,
-                house_number as HouseNumber,
-                building as Building,
-                staircase as Staircase,
+                trim_leading_zeros(house_number) as HouseNumber,
+                trim_leading_zeros(building) as Building,
+                trim_leading_zeros(staircase) as Staircase,
                 hash_postal_code_id(CAST(postal_code AS VARCHAR)) as PostalCode_ID,
                 hash_polling_station_id(
                     county_code, settlement_code, oevk_code, COALESCE(tevk_code, '-'), polling_station_address
@@ -689,9 +726,9 @@ def process_chunk_parallel(
                               COALESCE(building, ''), COALESCE(staircase, ''))) as FullAddress,
                 street_name as PublicSpaceName,
                 COALESCE(street_type, '') as PublicSpaceType,
-                house_number as HouseNumber,
-                building as Building,
-                staircase as Staircase,
+                trim_leading_zeros(house_number) as HouseNumber,
+                trim_leading_zeros(building) as Building,
+                trim_leading_zeros(staircase) as Staircase,
                 hash_postal_code_id(CAST(postal_code AS VARCHAR)) as PostalCode_ID,
                 hash_polling_station_id(
                     county_code, settlement_code, oevk_code, COALESCE(tevk_code, '-'), polling_station_address
