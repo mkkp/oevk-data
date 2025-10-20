@@ -210,3 +210,99 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;
 -- Trigram index for efficient LIKE/ILIKE queries on FullAddress
 -- Enables fast substring searches like '%Bar%' and '%utca%'
 CREATE INDEX IF NOT EXISTS idx_address_fulladdress_trgm ON Address USING gin (FullAddress gin_trgm_ops);
+
+
+-- =============================================================================
+-- VIEWS
+-- =============================================================================
+
+-- View that reconstructs the original address structure from normalized tables
+-- This view joins Address with all foreign key tables to provide a denormalized view
+-- Column names match the original CSV structure (new model names)
+
+CREATE OR REPLACE VIEW AddressFullView AS
+SELECT
+    -- Address primary key
+    a.ID AS address_id,
+
+    -- Sequence and ordering
+    a.Sequence AS sequence,
+    a.OriginalOrder AS original_order,
+
+    -- County information (Vármegye)
+    c.ID AS county_id,
+    c.CountyCode AS county_code,
+    c.CountyName AS county_name,
+
+    -- National Electoral District (OEVK)
+    oevk.ID AS national_individual_electoral_district_id,
+    oevk.OEVK AS oevk_code,
+    oevk.Name AS oevk_name,
+
+    -- Settlement information (Település)
+    s.ID AS settlement_id,
+    s.SettlementCode AS settlement_code,
+    s.SettlementName AS settlement_name,
+
+    -- Settlement Electoral District (TEVK)
+    tevk.ID AS settlement_individual_electoral_district_id,
+    tevk.TEVK AS tevk_code,
+    tevk.Name AS tevk_name,
+
+    -- Polling Station (Szavazókör)
+    ps.ID AS polling_station_id,
+    ps.PollingStationAddress AS polling_station_address,
+
+    -- Postal Code (Irányítószám/PIR)
+    pc.ID AS postal_code_id,
+    pc.PostalCode AS postal_code,
+
+    -- Address components (Cím komponensek)
+    a.PublicSpaceName AS public_space_name,  -- Közterület név
+    a.PublicSpaceType AS public_space_type,  -- Közterület jelleg
+    a.HouseNumber AS house_number,           -- Házszám
+    a.Building AS building,                  -- Épület
+    a.Staircase AS staircase,                -- Lépcsőház
+
+    -- Full address (Teljes cím)
+    a.FullAddress AS full_address,
+
+    -- Deduplication metadata
+    a.OriginalAddressCount AS original_address_count,
+
+    -- Polling station mapping
+    (
+        SELECT COUNT(*)
+        FROM AddressPollingStations aps
+        WHERE aps.AddressID = a.ID
+    ) AS polling_station_count,
+
+    -- PIR code mapping
+    (
+        SELECT STRING_AGG(PIRCode, ', ' ORDER BY PIRCode)
+        FROM AddressPIRCodes apir
+        WHERE apir.AddressID = a.ID
+    ) AS pir_codes
+
+FROM Address a
+-- Join County
+INNER JOIN County c ON a.County_ID = c.ID
+-- Join Settlement
+INNER JOIN Settlement s ON a.Settlement_ID = s.ID
+-- Join National Electoral District (OEVK)
+INNER JOIN NationalIndividualElectoralDistrict oevk ON a.NationalIndividualElectoralDistrict_ID = oevk.ID
+-- Join Settlement Electoral District (TEVK)
+INNER JOIN SettlementIndividualElectoralDistrict tevk ON a.SettlementIndividualElectoralDistrict_ID = tevk.ID
+-- Join Polling Station
+INNER JOIN PollingStation ps ON a.PollingStation_ID = ps.ID
+-- Join Postal Code
+INNER JOIN PostalCode pc ON a.PostalCode_ID = pc.ID;
+
+-- Note: Views automatically use indexes from the underlying tables
+-- The following tables already have appropriate indexes:
+-- - County(CountyCode)
+-- - Settlement(County_ID, SettlementCode)
+-- - PostalCode(PostalCode)
+
+-- Add comment to the view
+COMMENT ON VIEW AddressFullView IS 'Denormalized view of addresses with all related entities joined. Column names use the new model naming convention as specified in FUNCTIONAL_REQUIREMENTS.md';

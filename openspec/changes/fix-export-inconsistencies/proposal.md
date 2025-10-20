@@ -49,6 +49,13 @@ This proposal introduces five distinct capabilities to address these issues:
 - Preserve all referential integrity (counties, districts, polling stations, postal codes)
 - Optional: Add `--limit-settlements` parameter to loader script for quick targeted tests
 
+### 6. AddressFullView Database View
+- Create a denormalized PostgreSQL view joining `Address` with all foreign key tables
+- Provide both UUID foreign keys and human-readable data in a single queryable view
+- Use new model naming convention (English column names) for consistency
+- Include all 28 columns: primary key, 6 foreign key IDs, and 21 data columns
+- Automatically created as part of schema generation and database setup
+
 ## Impact
 
 ### Affected Specs
@@ -57,13 +64,16 @@ This proposal introduces five distinct capabilities to address these issues:
 - **NEW**: `coordinate-export` - Geospatial data export capability
 - **NEW**: `loader-parameterization` - PostgreSQL loader script configuration
 - **NEW**: `test-subset` - Representative test data generation
+- **NEW**: `address-full-view` - Denormalized database view for simplified querying
 
 ### Affected Code
 - `src/etl/deduplicate.py` - Modify canonical address selection logic with priority scoring
 - `src/etl/transform_optimized.py` - Apply leading zero trimming to address components, fix foreign key population
 - `src/database/schema.sql` - Add coordinate columns to `SettlementIndividualElectoralDistrict` table
-- `src/etl/export.py` - Include coordinate columns in PostgreSQL schema export
+- `src/etl/export.py` - Include coordinate columns in PostgreSQL schema export, add AddressFullView to schema generation
 - `src/release/templates/load_postgresql.py` - Add `--database` parameter
+- `exports/schema.sql` - PostgreSQL DDL including AddressFullView definition
+- `exports/address_view.sql` - Standalone view definition file
 - `tests/integration/test_deduplication_priority.py` - New tests for priority logic
 - `tests/integration/test_data_integrity.py` - New tests for data quality
 - `tests/integration/test_coordinate_export_simple.py` - New tests for coordinate export schema
@@ -92,3 +102,4 @@ This proposal depends on the completed PostgreSQL export capability from the arc
 3. **Coordinate Support**: Coordinate data can be exported to PostgreSQL and successfully loaded back with proper geometry types
 4. **Loader Flexibility**: Users can specify custom database names via `--database` parameter without errors
 5. **Testing Efficiency**: Representative subset database enables full pipeline testing in under 30 seconds (vs. 2.5 minutes for full dataset)
+6. **View Accessibility**: AddressFullView is automatically created in PostgreSQL, provides all 28 columns, and simplifies queries by eliminating manual joins

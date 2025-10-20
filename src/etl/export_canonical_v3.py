@@ -37,6 +37,57 @@ def clean_zero_only_field(value):
     return value
 
 
+def trim_leading_zeros_udf(value):
+    """Trim leading zeros from address components (UDF for DuckDB).
+
+    Handles:
+    - Simple numbers: "000123" -> "123"
+    - Ranges: "000001-00005" -> "1-5"
+    - Slash notation: "000001/D" -> "1/D"
+    - Preserves non-numeric: "A", "L" -> unchanged
+    - Empty/null: returns empty string
+
+    Args:
+        value: String value to trim
+
+    Returns:
+        String with leading zeros removed
+    """
+    if value is None or value == "" or value == "NULL":
+        return ""
+
+    value_str = str(value).strip()
+    if not value_str:
+        return ""
+
+    # Handle range notation (e.g., "000001-00005" -> "1-5")
+    if "-" in value_str and not value_str.startswith("-"):
+        parts = value_str.split("-")
+        trimmed_parts = [part.lstrip("0") or "0" for part in parts]
+        return "-".join(trimmed_parts)
+
+    # Handle slash notation (e.g., "000001/D" -> "1/D")
+    if "/" in value_str:
+        parts = value_str.split("/")
+        trimmed_parts = [parts[0].lstrip("0") or "0"] + parts[1:]
+        return "/".join(trimmed_parts)
+
+    # Handle simple numeric strings
+    if value_str.isdigit():
+        return value_str.lstrip("0") or "0"
+
+    # Handle strings that start with digits followed by letters (e.g., "000001A" -> "1A")
+    if value_str[0].isdigit():
+        i = 0
+        while i < len(value_str) and value_str[i].isdigit():
+            i += 1
+        numeric_part = value_str[:i].lstrip("0") or "0"
+        return numeric_part + value_str[i:]
+
+    # Non-numeric values remain unchanged
+    return value_str
+
+
 def export_canonical_addresses_optimized(
     db_connection: duckdb.DuckDBPyConnection,
     export_dir: str,
@@ -82,13 +133,22 @@ def export_canonical_addresses_optimized(
     start_time = time.time()
     logger.info("Fetching all canonical addresses...")
 
+    # Register Python UDF for trimming leading zeros with explicit return type
+    try:
+        db_connection.create_function("trim_leading_zeros", trim_leading_zeros_udf, return_type=str)
+    except Exception as func_err:
+        if "already created" in str(func_err):
+            logger.debug("trim_leading_zeros function already exists, skipping")
+        else:
+            raise
+
     rows = db_connection.execute("""
         WITH address_details AS (
             SELECT
                 am.CanonicalAddressID,
                 a.PublicSpaceType,
-                a.Building,
-                a.Staircase,
+                trim_leading_zeros(a.Building) as Building,
+                trim_leading_zeros(a.Staircase) as Staircase,
                 a.SettlementIndividualElectoralDistrict_ID,
                 a.County_ID,
                 a.Settlement_ID,
@@ -118,7 +178,7 @@ def export_canonical_addresses_optimized(
             ca.FullAddress,
             ca.StreetName as PublicSpaceName,
             COALESCE(ad.PublicSpaceType, '') as PublicSpaceType,
-            ca.HouseNumber,
+            trim_leading_zeros(ca.HouseNumber) as HouseNumber,
             ad.Building,
             ad.Staircase,
             COALESCE(pc.PostalCodeID, '00000000-0000-0000-0000-000000000000') as PostalCode_ID,

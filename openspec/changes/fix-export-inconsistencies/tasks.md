@@ -142,7 +142,41 @@
     - [ ] **DEFERRED**: Test subset processing completes in under 30 seconds (requires duckdb_scan fix)
     - [ ] **DEFERRED**: Test subset is deterministic with same seed (requires duckdb_scan fix)
 
-## Phase 6: Integration and Validation
+## Phase 6: AddressFullView Database View
+
+- [x] **Create AddressFullView SQL definition**
+    - [x] Create `exports/address_view.sql` with view definition
+    - [x] Join Address table with all foreign key tables (County, Settlement, OEVK, TEVK, PollingStation, PostalCode)
+    - [x] Include primary key: `address_id` (UUID)
+    - [x] Include all foreign key IDs: `county_id`, `settlement_id`, `national_individual_electoral_district_id`, `settlement_individual_electoral_district_id`, `polling_station_id`, `postal_code_id`
+    - [x] Include human-readable columns using new model naming convention (28 columns total)
+    - [x] Add subqueries for `polling_station_count` and `pir_codes` aggregations
+
+- [x] **Integrate view into PostgreSQL schema generation**
+    - [x] Update `src/etl/export.py` - `generate_postgresql_schema()` function
+    - [x] Add view creation SQL to `postgresql_indexes` section
+    - [x] Ensure view is created AFTER all tables (dependency order)
+    - [x] Add comment documentation for the view
+
+- [x] **Update schema.sql DDL file**
+    - [x] Add view creation to `exports/schema.sql`
+    - [x] Verify generated schema matches manually edited version
+    - [x] Confirm view appears in VIEWS section at end of schema
+
+- [x] **Test view in PostgreSQL database**
+    - [x] Apply view to running PostgreSQL database
+    - [x] Verify all 28 columns present and correct
+    - [x] Test sample queries with joins working correctly
+    - [x] Confirm foreign key IDs and readable data both accessible
+
+- [x] **Update documentation**
+    - [x] Add AddressFullView section to README.md
+    - [x] Include example queries using the view
+    - [x] Document all 28 columns and their purposes
+    - [x] Update proposal.md with new capability
+    - [x] Update tasks.md with completion status
+
+## Phase 7: Integration and Validation
 
 - [x] **Run full pipeline with all fixes**
     - [x] Created comprehensive full-cycle integration test (`tests/integration/test_full_cycle.py`)

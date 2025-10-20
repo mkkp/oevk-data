@@ -268,14 +268,68 @@ export POSTGRES_PASSWORD=oevk
 - **Trigram Text Search**: GIN indexes on `FullAddress` for efficient substring searches
 - **Idempotent Inserts**: Uses `ON CONFLICT DO NOTHING` - safe to run multiple times
 - **Performance**: 100K+ rows/sec throughput
+- **AddressFullView**: Denormalized view joining all address and foreign key tables
 
-**Example queries:**
+**AddressFullView:**
+
+The schema includes a comprehensive view that joins the `Address` table with all foreign key tables, providing a denormalized representation of the data:
+
+```sql
+-- View structure (28 columns)
+CREATE OR REPLACE VIEW AddressFullView AS
+SELECT
+    -- Primary and foreign keys
+    a.ID AS address_id,
+    c.ID AS county_id,
+    s.ID AS settlement_id,
+    oevk.ID AS national_individual_electoral_district_id,
+    tevk.ID AS settlement_individual_electoral_district_id,
+    ps.ID AS polling_station_id,
+    pc.ID AS postal_code_id,
+    
+    -- Human-readable data (new model naming convention)
+    c.CountyCode AS county_code,
+    c.CountyName AS county_name,
+    s.SettlementCode AS settlement_code,
+    s.SettlementName AS settlement_name,
+    oevk.OEVK AS oevk_code,
+    oevk.Name AS oevk_name,
+    tevk.TEVK AS tevk_code,
+    tevk.Name AS tevk_name,
+    ps.PollingStationAddress AS polling_station_address,
+    pc.PostalCode AS postal_code,
+    a.PublicSpaceName AS public_space_name,
+    a.PublicSpaceType AS public_space_type,
+    a.HouseNumber AS house_number,
+    a.Building AS building,
+    a.Staircase AS staircase,
+    a.FullAddress AS full_address,
+    -- ... and more
+FROM Address a
+JOIN County c ON a.County_ID = c.ID
+JOIN Settlement s ON a.Settlement_ID = s.ID
+-- ... additional joins
+```
+
+**Example queries using AddressFullView:**
 ```sql
 -- Substring search (case-insensitive)
-SELECT * FROM Address WHERE FullAddress ILIKE '%Budapest%';
+SELECT * FROM AddressFullView WHERE full_address ILIKE '%Budapest%';
 
--- Find streets with "utca" (Hungarian for street)
-SELECT * FROM Address WHERE FullAddress ILIKE '%utca%';
+-- Find addresses by settlement
+SELECT address_id, full_address, postal_code
+FROM AddressFullView
+WHERE settlement_name = 'Budapest I';
+
+-- Search by street name and type
+SELECT * FROM AddressFullView 
+WHERE public_space_name = 'Dózsa' 
+  AND public_space_type = 'utca';
+
+-- Get all foreign key IDs for integration
+SELECT address_id, county_id, settlement_id, polling_station_id
+FROM AddressFullView
+WHERE postal_code = '1014';
 ```
 
 #### Standalone PostgreSQL Loader
