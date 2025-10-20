@@ -308,6 +308,27 @@ Examples:
         action="store_true",
         help="Force recreation of Docker container",
     )
+    setup_parser.add_argument(
+        "--verify",
+        action="store_true",
+        help="Verify imported data matches source database (samples 5%% of data)",
+    )
+    setup_parser.add_argument(
+        "--verify-sample",
+        type=float,
+        default=5.0,
+        help="Percentage of data to sample for verification (default: 5.0)",
+    )
+    setup_parser.add_argument(
+        "--db-path",
+        default="data/oevk.db",
+        help="Path to source DuckDB database for verification (default: data/oevk.db)",
+    )
+    setup_parser.add_argument(
+        "--ignore-verify-errors",
+        action="store_true",
+        help="Continue even if verification fails",
+    )
 
     # db export-dump command
     export_dump_parser = db_subparsers.add_parser(
@@ -1287,6 +1308,16 @@ def setup_database(args):
     else:
         logger.warning(f"DDL script not found at: {args.ddl_script}")
 
+    # Execute view creation script if it exists (after schema creation)
+    view_script = os.path.join(os.path.dirname(args.ddl_script), "address_view.sql")
+    if os.path.exists(view_script):
+        logger.info(f"Executing view creation script: {view_script}")
+        with open(view_script, "r") as f:
+            cur.execute(f.read())
+        logger.info("View creation script executed successfully.")
+    else:
+        logger.info("View creation script not found (view may already be in schema.sql)")
+
     cur.close()
     conn.close()
 
@@ -1334,6 +1365,34 @@ def setup_database(args):
         subprocess.run(cleanup_command, check=False)
     else:
         logger.warning(f"DML script not found at: {args.dml_script}")
+
+    # Verify import if requested
+    if hasattr(args, 'verify') and args.verify:
+        logger.info("\n" + "=" * 80)
+        logger.info("Starting import verification...")
+        logger.info("=" * 80)
+
+        from src.database.verify_import import verify_postgresql_import, verify_view_exists
+
+        # Get DuckDB path from args or use default
+        duckdb_path = getattr(args, 'db_path', 'data/oevk.db')
+
+        # Verify data integrity
+        verification_passed = verify_postgresql_import(
+            duckdb_path=duckdb_path,
+            pg_config=pg_config,
+            sample_percentage=getattr(args, 'verify_sample', 5.0)
+        )
+
+        # Verify view exists
+        view_passed = verify_view_exists(pg_config)
+
+        if verification_passed and view_passed:
+            logger.info("\n✅ VERIFICATION PASSED - Data integrity confirmed")
+        else:
+            logger.error("\n❌ VERIFICATION FAILED - Please check errors above")
+            if not getattr(args, 'ignore_verify_errors', False):
+                sys.exit(1)
 
     logger.info("Database setup completed successfully.")
 

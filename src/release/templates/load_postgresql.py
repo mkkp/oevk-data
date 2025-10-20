@@ -10,6 +10,9 @@ Usage:
     # Load to existing database
     python load_postgresql.py --host localhost --port 5432 --db oevk --user oevk --password oevk
 
+    # Or use --database as an alias for --db
+    python load_postgresql.py --host localhost --port 5432 --database mydb --user oevk --password oevk
+
     # Auto-create Docker database and load
     python load_postgresql.py --docker
 
@@ -668,6 +671,8 @@ Examples:
     )
     parser.add_argument(
         "--db",
+        "--database",
+        dest="db",
         default=os.getenv("POSTGRES_DB", "oevk"),
         help="Database name (default: oevk or $POSTGRES_DB)",
     )
@@ -779,8 +784,42 @@ Examples:
         print("✓ Connected successfully")
 
     except Exception as e:
+        error_msg = str(e).lower()
         print(f"✗ Connection failed: {e}")
-        print("\nPlease check your connection settings or use --docker mode")
+
+        # Provide specific guidance based on error type
+        if "database" in error_msg and "does not exist" in error_msg:
+            print(f"\n❌ Error: Database '{args.db}' does not exist")
+            print("\nOptions:")
+            print(f"  1. Create database manually:")
+            print(f"     psql -h {args.host} -p {args.port} -U {args.user} -c \"CREATE DATABASE {args.db}\"")
+            print(f"  2. Use --drop-database flag to auto-create:")
+            print(f"     python {sys.argv[0]} --drop-database [other args]")
+            print(f"  3. Use --docker mode to auto-create everything:")
+            print(f"     python {sys.argv[0]} --docker")
+        elif "invalid" in error_msg and ("database" in error_msg or "dbname" in error_msg):
+            print(f"\n❌ Error: Invalid database name '{args.db}'")
+            print("\nDatabase names must:")
+            print("  • Start with a letter or underscore")
+            print("  • Contain only letters, numbers, and underscores")
+            print("  • Be 63 characters or less")
+        elif "authentication failed" in error_msg or "password" in error_msg:
+            print(f"\n❌ Error: Authentication failed for user '{args.user}'")
+            print("\nPlease check:")
+            print("  • Username is correct (--user)")
+            print("  • Password is correct (--password)")
+            print("  • User has permission to connect to database")
+        elif "connection refused" in error_msg or "could not connect" in error_msg:
+            print(f"\n❌ Error: Could not connect to PostgreSQL server")
+            print("\nPlease check:")
+            print(f"  • PostgreSQL is running on {args.host}:{args.port}")
+            print(f"  • Firewall allows connections to port {args.port}")
+            print(f"  • Host address '{args.host}' is correct")
+            if not args.docker:
+                print("\nTip: Use --docker mode to automatically create a local PostgreSQL instance")
+        else:
+            print("\nPlease check your connection settings or use --docker mode")
+
         sys.exit(1)
 
     # Handle --clean (truncate tables)

@@ -9,16 +9,19 @@ Transform Hungarian electoral address data from authoritative government sources
 1. **Data Normalization**: Transform raw electoral data into 14 normalized relational tables
 2. **Entity Extraction**: Identify and extract public space entities (names, types) from address strings
 3. **Address Deduplication**: Merge duplicate addresses using Hungarian address formatting rules
-4. **Partitioned Exports**: Generate settlement-based CSV files for efficient data access
-5. **Release Automation**: Package and publish processed data to GitHub releases
+4. **Multi-Format Export**: Generate settlement-based exports in CSV and PostgreSQL formats
+5. **PostgreSQL Integration**: Automated schema translation, UUID conversion, and Docker-based verification
+6. **Release Automation**: Package and publish processed data to GitHub releases with multiple formats
 
 ### Business Value
 
 - **Data Quality**: Deduplicated, normalized data with 100% referential integrity
 - **Performance**: 98.6% improvement (183.6 min → 2.5 min) through parallel processing
 - **Accessibility**: Settlement-partitioned exports enable efficient regional analysis
-- **Traceability**: Deterministic hash IDs ensure idempotent, reproducible processing
+- **Database Flexibility**: Export to both CSV and PostgreSQL with automated verification
+- **Traceability**: Deterministic hash IDs (xxhash64) and UUID v3 ensure idempotent, reproducible processing
 - **Public Space Analysis**: Extracted entities enable geospatial and urban planning research
+- **Docker Integration**: Automated PostgreSQL setup and verification with containerization
 
 ## Tech Stack
 
@@ -26,9 +29,13 @@ Transform Hungarian electoral address data from authoritative government sources
 
 - **Language**: Python 3.12.6
 - **Data Processing**: Polars 0.20.0+ (high-performance DataFrame library)
-- **Database**: DuckDB 0.10.0+ (embedded analytical database)
+- **Databases**: 
+  - DuckDB 0.10.0+ (embedded analytical database)
+  - PostgreSQL 16+ (production database export target)
 - **Hashing**: xxhash 3.4.0+ (deterministic ID generation)
+- **UUID**: UUID v3 with DNS namespace `oevk.hu` for PostgreSQL exports
 - **HTTP**: requests 2.31.0+ (source data downloads)
+- **PostgreSQL Driver**: psycopg2-binary 2.9.0+ (PostgreSQL connectivity)
 
 ### Development Tools
 
@@ -36,6 +43,7 @@ Transform Hungarian electoral address data from authoritative government sources
 - **Code Quality**: mypy (static type checking)
 - **Testing**: pytest (unit, integration, contract tests)
 - **Performance**: psutil 5.9.0+ (resource monitoring)
+- **Containerization**: Docker (PostgreSQL verification and setup)
 
 ### Release Tools
 
@@ -164,8 +172,11 @@ def transform_all_optimized(db_connection, run_tag, enable_deduplication) -> Non
     """Transform staging to normalized tables with parallel processing."""
 
 # src/etl/export.py
-def export_tables_to_csv(db_connection, output_dir, run_tag) -> None:
-    """Export normalized tables to CSV files."""
+def export_tables_to_csv(db_connection, output_dir, run_tag, formats=["csv"]) -> None:
+    """Export normalized tables to CSV and/or PostgreSQL formats."""
+    
+def generate_postgresql_schema() -> str:
+    """Translate SQLite schema to PostgreSQL with UUID types."""
 ```
 
 **Benefits**:
@@ -548,17 +559,115 @@ County (20)
 
 ### Export Formats
 
+**CSV Export (DuckDB format)**:
+- ID Format: xxhash64 hexadecimal strings
+- Deterministic hash-based IDs for idempotency
+- Settlement-partitioned files for efficient access
+- UTF-8 encoding with proper Hungarian character support
+
+**PostgreSQL Export**:
+- ID Format: UUID v3 (DNS namespace: `oevk.hu`)
+- Schema Translation: TEXT PRIMARY KEY → UUID PRIMARY KEY
+- Files Generated:
+  - `schema.sql` - PostgreSQL DDL with UUID types and trigram indexes
+  - `data.sql` - INSERT statements with UUID v3 IDs and ON CONFLICT DO NOTHING
+  - `oevk_db_{timestamp}.sql.gz` - Compressed pg_dump for production deployment
+- Trigram GIN indexes on FullAddress for efficient text search
+- Idempotent loading with conflict resolution
+
 **UUID v3 Standard**:
-- Namespace: `'oevk.hu'` (DNS namespace for Hungarian electoral data)
-- All entity IDs converted to UUID v3 format
-- Deterministic: Same input → Same UUID
+- Namespace: `uuid.uuid3(uuid.NAMESPACE_DNS, 'oevk.hu')`
+- All entity IDs converted to UUID v3 format for PostgreSQL
+- Deterministic: Same input → Same UUID across runs
 - Example: `32e85e9e-7bac-372b-bd74-7e8ca77025d1`
 
-**Settlement Partitioning**:
+**Settlement Partitioning** (CSV only):
 - Canonical addresses: `Address_{code}_{name}.csv` (1,341 files)
 - Original addresses: `OriginalAddress_{code}_{name}.csv` (1,341 files)
 - Unified directory: Both types in `{run_tag}_Address/` directory
 - Benefits: Regional analysis, reduced file sizes, parallel processing
+
+## PostgreSQL Integration
+
+### Schema Translation
+
+**Automated SQLite to PostgreSQL Conversion**:
+- TEXT PRIMARY KEY → UUID PRIMARY KEY
+- xxhash64 IDs → UUID v3 format
+- Foreign key relationships preserved
+- Trigram extensions for text search
+
+**Generated Files**:
+1. `schema.sql` - PostgreSQL DDL
+2. `data.sql` - INSERT statements with ON CONFLICT DO NOTHING
+3. `oevk_db_{timestamp}.sql.gz` - Compressed pg_dump
+
+### Docker-Based Verification
+
+**Automated Import Verification**:
+```python
+# Workflow:
+1. Create temporary PostgreSQL container (postgres:16-alpine)
+2. Import schema.sql using psql
+3. Import data.sql using psql
+4. Verify row counts match expectations
+5. Create pg_dump with --clean --if-exists flags
+6. Compress dump with gzip
+7. Cleanup temporary container
+```
+
+**Docker Container Management**:
+- `DockerPostgreSQLManager` class in `src/utils/docker_postgresql.py`
+- Automatic container lifecycle (create, wait for ready, cleanup)
+- Configurable ports and credentials
+- Health check polling until PostgreSQL accepts connections
+
+### Standalone Loader Script
+
+**Features** (`src/release/templates/load_postgresql.py`):
+- Automatic Docker PostgreSQL setup with `--docker` flag
+- External database connection support
+- Streaming for large files (>10MB) with progress indicators
+- Environment variable configuration
+- `--database` parameter for target database selection
+- `--clean` option to truncate tables before loading
+- `--drop-database` option for fresh start
+- Idempotent loading with ON CONFLICT DO NOTHING
+
+**Usage Examples**:
+```bash
+# Auto-create Docker database
+python load_postgresql.py --docker
+
+# Connect to existing database
+python load_postgresql.py --host localhost --port 5432 --database oevk
+
+# Fresh load with database recreation
+python load_postgresql.py --docker --drop-database
+
+# Clean load (truncate tables, keep schema)
+python load_postgresql.py --docker --clean
+```
+
+### CLI Commands
+
+**Database Setup** (`db setup`):
+```bash
+# Create Docker PostgreSQL and load data
+python src/cli.py db setup
+
+# Custom configuration
+python src/cli.py db setup --container-name my-oevk --port 15432
+```
+
+**Export Control**:
+```bash
+# Export both CSV and PostgreSQL (default)
+python src/cli.py run
+
+# Skip PostgreSQL export (CSV only)
+python src/cli.py run --skip-postgresql-export
+```
 
 ## Important Constraints
 
@@ -655,9 +764,10 @@ County (20)
 - Permissions: `repo`, `workflow`, `read:org`
 
 **Release Artifacts**:
-1. CSV Archive (`oevk-data-csv-{tag}.zip`): All CSV files
-2. Database Archive (`oevk-data-db-{tag}.zip`): Complete database
-3. Metadata: JSON with validation results and metrics
+1. CSV Archive (`oevk-data-csv-{tag}.zip`): All CSV files partitioned by settlement
+2. Database Archive (`oevk-data-db-{tag}.zip`): Complete DuckDB database
+3. PostgreSQL Archive (`oevk-postgresql-{tag}.zip`): PostgreSQL-compatible SQL files, gzipped dump, and loader script
+4. Metadata: JSON with validation results and metrics
 
 ### Configuration Management
 
@@ -693,8 +803,11 @@ export GITHUB_TOKEN="ghp_your_classic_token_here"
 ### Common Commands
 
 ```bash
-# Complete pipeline (default: canonical addresses only)
+# Complete pipeline (CSV + PostgreSQL, default)
 python src/cli.py run
+
+# CSV export only (skip PostgreSQL)
+python src/cli.py run --skip-postgresql-export
 
 # Include original addresses in export
 python src/cli.py run --export-original-addresses
@@ -708,14 +821,18 @@ python src/cli.py run --db-path custom.db --output-dir exports/
 # Specific stages only
 python src/cli.py run --stages transform,export
 
+# PostgreSQL database setup
+python src/cli.py db setup --container-name oevk-postgres --port 15432
+
 # Release workflow
 export GITHUB_TOKEN="ghp_your_token"
 python src/cli.py release create --repo-owner org --repo-name repo --auto
 
-# Run tests
+# Run tests (including PostgreSQL integration tests)
 pytest tests/
 pytest tests/contract/
 pytest tests/integration/
+pytest tests/integration/test_postgresql_export.py
 
 # Code quality
 ruff check .
@@ -728,11 +845,16 @@ mypy .
 - `src/cli.py` - Command-line interface entry point
 - `src/etl/transform_optimized.py` - Main transformation logic
 - `src/etl/deduplicate.py` - Address deduplication
-- `src/etl/export_canonical_v2.py` - UUID v3 canonical export
+- `src/etl/export.py` - Multi-format export (CSV, PostgreSQL)
+- `src/etl/export_canonical_v3.py` - UUID v3 canonical export with PostgreSQL support
+- `src/etl/postgresql_verify.py` - PostgreSQL import verification
+- `src/utils/docker_postgresql.py` - Docker PostgreSQL container management
 - `src/utils/config.py` - Configuration management
 - `src/release/workflow.py` - Release workflow orchestration
+- `src/release/packaging.py` - Multi-format packaging (CSV, DB, PostgreSQL)
+- `src/release/templates/load_postgresql.py` - Standalone PostgreSQL loader script
 - `tests/contract/` - Contract tests (TDD)
-- `specs/` - Feature specifications
+- `tests/integration/` - Integration tests (including PostgreSQL)
 
 ### Architecture Diagram
 
@@ -757,14 +879,31 @@ mypy .
 └────────┬────────┘
          │
          ▼
-┌─────────────────┐
-│    Export       │ (CSV with UUID v3)
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│    Release      │ (GitHub artifacts)
-└─────────────────┘
+┌─────────────────────────────────────┐
+│           Export                    │
+│  ┌─────────────┐  ┌───────────────┐│
+│  │     CSV     │  │  PostgreSQL   ││
+│  │  (xxhash64) │  │  (UUID v3)    ││
+│  └─────────────┘  └───────────────┘│
+└────────┬────────────────┬───────────┘
+         │                │
+         │                ▼
+         │       ┌─────────────────┐
+         │       │  Docker Verify  │ (psql import)
+         │       └────────┬────────┘
+         │                │
+         │                ▼
+         │       ┌─────────────────┐
+         │       │   pg_dump.gz    │ (gzipped dump)
+         │       └────────┬────────┘
+         │                │
+         ▼                ▼
+┌─────────────────────────────────────┐
+│            Release                  │
+│  - CSV Archive (partitioned)        │
+│  - DuckDB Archive                   │
+│  - PostgreSQL Archive (SQL + dump)  │
+└─────────────────────────────────────┘
 ```
 
 ---

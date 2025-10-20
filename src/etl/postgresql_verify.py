@@ -280,7 +280,7 @@ def _verify_import(manager: DockerPostgreSQLManager) -> int:
     count_query = """
         SELECT
             schemaname,
-            tablename,
+            relname as tablename,
             n_live_tup as row_count
         FROM pg_stat_user_tables
         ORDER BY n_live_tup DESC;

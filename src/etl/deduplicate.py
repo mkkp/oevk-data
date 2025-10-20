@@ -624,17 +624,104 @@ class AddressDeduplicator:
         """Normalize text for consistent hashing."""
         return text.strip().upper() if text else ""
 
+    def _calculate_address_structure_score(
+        self, house_number: str, building: str, staircase: str
+    ) -> int:
+        """
+        Calculate structure quality score for address format prioritization.
+
+        Higher scores indicate more structured/preferred formats:
+        - Structured format (plain house number + separate building/staircase): higher score
+        - Combined format (house number with slash notation): lower score
+
+        Args:
+            house_number: Raw house number field value
+            building: Raw building field value
+            staircase: Raw staircase field value
+
+        Returns:
+            Integer score where higher values indicate better structure
+
+        Examples:
+            >>> # Structured formats (higher scores)
+            >>> _calculate_address_structure_score("1", "D", "") # house + building
+            >>> 100
+            >>> _calculate_address_structure_score("1", "1", "1") # house + building + staircase
+            >>> 110
+
+            >>> # Combined formats (lower scores)
+            >>> _calculate_address_structure_score("1/D", "", "") # slash notation only
+            >>> 50
+            >>> _calculate_address_structure_score("1/D", "", "L") # slash + staircase
+            >>> 60
+        """
+        house_num = (house_number or "").strip()
+        has_slash = "/" in house_num
+        has_building = bool((building or "").strip())
+        has_staircase = bool((staircase or "").strip())
+
+        # Base score for plain house number (no slash)
+        if not has_slash:
+            score = 100
+            # Bonus for having separate building field
+            if has_building:
+                score += 10
+            # Bonus for having separate staircase field
+            if has_staircase:
+                score += 10
+            return score
+
+        # Lower base score for combined format (with slash)
+        score = 50
+        # Small bonus for having additional separate fields
+        if has_staircase:
+            score += 10
+        if has_building:
+            score += 5
+
+        return score
+
     def _create_canonical_addresses(self, addresses_df: pl.DataFrame) -> pl.DataFrame:
-        """Create canonical address records with formatted full address."""
+        """
+        Create canonical address records with formatted full address.
+
+        Prioritizes structured address formats (plain house number + separate building/staircase)
+        over combined formats (slash notation) when selecting canonical representatives.
+        """
         # Check if accessibility_flag column exists
         has_accessibility = "accessibility_flag" in addresses_df.columns
 
+        # Calculate structure score for each address to enable priority-based selection
+        def calculate_score_udf(house_number: str, building: str, staircase: str) -> int:
+            return self._calculate_address_structure_score(
+                house_number or "", building or "", staircase or ""
+            )
+
+        # Add structure score and row number for deterministic tiebreaking
+        addresses_with_score = addresses_df.with_columns(
+            [
+                pl.struct(["house_number", "building", "staircase"])
+                .map_elements(
+                    lambda row: calculate_score_udf(
+                        row["house_number"], row["building"], row["staircase"]
+                    ),
+                    return_dtype=pl.Int64,
+                )
+                .alias("structure_score"),
+                # Add row number within each canonical group for deterministic tiebreaking
+                pl.col("canonical_address_id").cum_count().over("canonical_address_id").alias("row_order")
+            ]
+        )
+
+        # Select best address from each canonical group based on:
+        # 1. Highest structure score (prefer structured formats)
+        # 2. First occurrence (deterministic tiebreaker when scores equal)
         aggregation_columns = [
             pl.first("county_code").alias("county_code"),
             pl.first("settlement_name").alias("settlement_name"),
             pl.first("street_name").alias("street_name"),
             pl.first("house_number").alias("house_number"),
-            pl.first("full_address").alias("full_address"),  # Include formatted address
+            pl.first("full_address").alias("full_address"),
         ]
 
         # Include accessibility_flag if it exists
@@ -644,7 +731,16 @@ class AddressDeduplicator:
                 pl.max("accessibility_flag").alias("accessibility_flag")
             )
 
-        return addresses_df.group_by("canonical_address_id").agg(aggregation_columns)
+        # Sort by structure score (descending) and row order (ascending) before grouping
+        # This ensures the first address in each group has the highest score
+        return (
+            addresses_with_score.sort(
+                ["canonical_address_id", "structure_score", "row_order"],
+                descending=[False, True, False]
+            )
+            .group_by("canonical_address_id")
+            .agg(aggregation_columns)
+        )
 
     def _preserve_relationships(
         self, addresses_df: pl.DataFrame, canonical_df: pl.DataFrame

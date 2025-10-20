@@ -118,9 +118,33 @@ class DockerPostgreSQLManager:
                 )
 
                 if result.returncode == 0:
-                    elapsed = time.time() - start_time
-                    logger.info(f"PostgreSQL ready after {elapsed:.1f}s")
-                    return True
+                    # PostgreSQL is accepting connections, but we need to verify
+                    # the database is actually ready by attempting a simple query
+                    try:
+                        test_result = subprocess.run(
+                            [
+                                "docker",
+                                "exec",
+                                self.container_name,
+                                "psql",
+                                "-U",
+                                self.user,
+                                "-d",
+                                self.database,
+                                "-c",
+                                "SELECT 1;",
+                            ],
+                            capture_output=True,
+                            text=True,
+                            timeout=5,
+                        )
+
+                        if test_result.returncode == 0:
+                            elapsed = time.time() - start_time
+                            logger.info(f"PostgreSQL ready after {elapsed:.1f}s")
+                            return True
+                    except (subprocess.SubprocessError, subprocess.TimeoutExpired):
+                        pass
 
             except (subprocess.SubprocessError, subprocess.TimeoutExpired):
                 pass
