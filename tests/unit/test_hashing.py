@@ -19,9 +19,9 @@ class TestHashingFunctions:
     def test_hash_county_id(self):
         """Test county ID hashing."""
         county_code = "01"
-        
+
         result = hash_county_id(county_code)
-        
+
         assert isinstance(result, str)
         assert len(result) == 16  # xxhash64 produces 16-character hex string
         # Test that the same input produces the same output
@@ -31,9 +31,9 @@ class TestHashingFunctions:
         """Test settlement ID hashing."""
         county_code = "01"
         settlement_code = "001"
-        
+
         result = hash_settlement_id(county_code, settlement_code)
-        
+
         assert isinstance(result, str)
         assert len(result) == 16
         # Test that the same input produces the same output
@@ -43,34 +43,37 @@ class TestHashingFunctions:
         """Test OEVK ID hashing."""
         county_code = "01"
         oevk = "01"
-        
+
         result = hash_oevk_id(county_code, oevk)
-        
+
         assert isinstance(result, str)
         assert len(result) == 16
         # Test that the same input produces the same output
         assert result == hash_oevk_id(county_code, oevk)
 
     def test_hash_tevk_id(self):
-        """Test TEVK ID hashing."""
+        """Test TEVK ID hashing.
+
+        TEVK is independent of OEVK - they are parallel electoral systems.
+        TEVK ID is based only on county, settlement, and TEVK code.
+        """
         county_code = "01"
         settlement_code = "001"
         tevk = "01"
-        oevk = "01"
-        
-        result = hash_tevk_id(county_code, settlement_code, tevk, oevk)
-        
+
+        result = hash_tevk_id(county_code, settlement_code, tevk)
+
         assert isinstance(result, str)
         assert len(result) == 16
         # Test that the same input produces the same output
-        assert result == hash_tevk_id(county_code, settlement_code, tevk, oevk)
+        assert result == hash_tevk_id(county_code, settlement_code, tevk)
 
     def test_hash_postal_code_id(self):
         """Test postal code ID hashing."""
         postal_code = "1011"
-        
+
         result = hash_postal_code_id(postal_code)
-        
+
         assert isinstance(result, str)
         assert len(result) == 16
         # Test that the same input produces the same output
@@ -80,9 +83,9 @@ class TestHashingFunctions:
         """Test postal code settlement ID hashing."""
         postal_code_id = "567890abcdef1234"
         settlement_id = "234567890abcdef1"
-        
+
         result = hash_postal_code_settlement_id(postal_code_id, settlement_id)
-        
+
         assert isinstance(result, str)
         assert len(result) == 16
         # Test that the same input produces the same output
@@ -95,11 +98,11 @@ class TestHashingFunctions:
         oevk = "01"
         tevk = "01"
         polling_station_address = "Main Street 1"
-        
+
         result = hash_polling_station_id(
             county_code, settlement_code, oevk, tevk, polling_station_address
         )
-        
+
         assert isinstance(result, str)
         assert len(result) == 16
         # Test that the same input produces the same output
@@ -111,7 +114,7 @@ class TestHashingFunctions:
         """Test address ID hashing."""
         result = hash_address_id(
             county_code="01",
-            settlement_code="001", 
+            settlement_code="001",
             public_space_name="Main Street",
             public_space_type="utca",
             house_number="1",
@@ -119,13 +122,13 @@ class TestHashingFunctions:
             staircase="",
             postal_code="1011"
         )
-        
+
         assert isinstance(result, str)
         assert len(result) == 16
         # Test that the same input produces the same output
         assert result == hash_address_id(
             county_code="01",
-            settlement_code="001", 
+            settlement_code="001",
             public_space_name="Main Street",
             public_space_type="utca",
             house_number="1",
@@ -137,30 +140,30 @@ class TestHashingFunctions:
     def test_hashing_deterministic(self):
         """Test that hashing produces the same result for same inputs."""
         county_code = "01"
-        
+
         result1 = hash_county_id(county_code)
         result2 = hash_county_id(county_code)
-        
+
         assert result1 == result2
 
     def test_hashing_different_inputs_produce_different_hashes(self):
         """Test that different inputs produce different hashes."""
         result1 = hash_county_id("01")
         result2 = hash_county_id("02")
-        
+
         assert result1 != result2
 
     def test_hashing_handles_none_values(self):
         """Test that hashing handles None values appropriately."""
         # Test with None values in TEVK
-        result = hash_tevk_id("01", "001", None, "01")
-        
+        result = hash_tevk_id("01", "001", None)
+
         assert isinstance(result, str)
         assert len(result) == 16
 
     def test_hashing_handles_empty_strings(self):
         """Test that hashing handles empty strings appropriately."""
         result = hash_county_id("")
-        
+
         assert isinstance(result, str)
         assert len(result) == 16

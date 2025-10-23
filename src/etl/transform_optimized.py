@@ -47,7 +47,7 @@ def register_hash_functions(db_connection: duckdb.DuckDBPyConnection) -> None:
         """)
 
         db_connection.execute("""
-            CREATE OR REPLACE MACRO hash_tevk_id(county_code, settlement_code, tevk, oevk) AS lower(substring(md5(county_code || '|' || settlement_code || '|' || COALESCE(tevk, '-') || '|' || oevk), 1, 16))
+            CREATE OR REPLACE MACRO hash_tevk_id(county_code, settlement_code, tevk) AS lower(substring(md5(county_code || '|' || settlement_code || '|' || COALESCE(tevk, '-')), 1, 16))
         """)
 
         db_connection.execute("""
@@ -345,15 +345,16 @@ def transform_settlement_individual_electoral_districts(
     logger.info("Transforming SettlementIndividualElectoralDistrict data")
 
     # Extract TEVK data from Korzet CSV
+    # TEVK is independent of OEVK - they are parallel electoral systems
     db_connection.execute(
         """
         INSERT INTO SettlementIndividualElectoralDistrict (
-            ID, TEVK, Name, County_ID, Settlement_ID, NationalIndividualElectoralDistrict_ID
+            ID, TEVK, Name, County_ID, Settlement_ID
         )
         SELECT
             hash_tevk_id(
                 sk.county_code, sk.settlement_code,
-                COALESCE(sk.tevk_code, '-'), sk.oevk_code
+                COALESCE(sk.tevk_code, '-')
             ) as ID,
             sk.tevk_code as TEVK,
             CASE
@@ -362,14 +363,12 @@ def transform_settlement_individual_electoral_districts(
                 ELSE MAX(sk.settlement_name)
             END as Name,
             c.ID as County_ID,
-            s.ID as Settlement_ID,
-            o.ID as NationalIndividualElectoralDistrict_ID
+            s.ID as Settlement_ID
         FROM staging_korzet sk
         JOIN County c ON sk.county_code = c.CountyCode
         JOIN Settlement s ON sk.county_code = c.CountyCode AND sk.settlement_code = s.SettlementCode
-        JOIN NationalIndividualElectoralDistrict o ON sk.county_code = c.CountyCode AND sk.oevk_code = o.OEVK
         WHERE sk.run_tag = ?
-        GROUP BY sk.county_code, sk.settlement_code, sk.tevk_code, sk.oevk_code, c.ID, s.ID, o.ID
+        GROUP BY sk.county_code, sk.settlement_code, sk.tevk_code, c.ID, s.ID
         ON CONFLICT (ID) DO NOTHING
     """,
         [run_tag],
@@ -400,7 +399,7 @@ def transform_polling_stations(
                 COALESCE(tevk_code, '-'), polling_station_address
             ) as ID,
             polling_station_address as PollingStationAddress,
-            hash_tevk_id(county_code, settlement_code, COALESCE(tevk_code, '-'), oevk_code) as SettlementIndividualElectoralDistrict_ID,
+            hash_tevk_id(county_code, settlement_code, COALESCE(tevk_code, '-')) as SettlementIndividualElectoralDistrict_ID,
             hash_county_id(county_code) as County_ID,
             hash_settlement_id(county_code, settlement_code) as Settlement_ID,
             hash_oevk_id(county_code, oevk_code) as NationalIndividualElectoralDistrict_ID
@@ -499,7 +498,7 @@ def transform_addresses_optimized(
                     county_code, settlement_code, oevk_code, COALESCE(tevk_code, '-'), polling_station_address
                 ) as PollingStation_ID,
                 hash_tevk_id(
-                    county_code, settlement_code, COALESCE(tevk_code, '-'), oevk_code
+                    county_code, settlement_code, COALESCE(tevk_code, '-')
                 ) as SettlementIndividualElectoralDistrict_ID,
                 hash_county_id(county_code) as County_ID,
                 hash_settlement_id(county_code, settlement_code) as Settlement_ID,
@@ -746,7 +745,7 @@ def process_chunk_parallel(
                     county_code, settlement_code, oevk_code, COALESCE(tevk_code, '-'), polling_station_address
                 ) as PollingStation_ID,
                 hash_tevk_id(
-                    county_code, settlement_code, COALESCE(tevk_code, '-'), oevk_code
+                    county_code, settlement_code, COALESCE(tevk_code, '-')
                 ) as SettlementIndividualElectoralDistrict_ID,
                 hash_county_id(county_code) as County_ID,
                 hash_settlement_id(county_code, settlement_code) as Settlement_ID,
