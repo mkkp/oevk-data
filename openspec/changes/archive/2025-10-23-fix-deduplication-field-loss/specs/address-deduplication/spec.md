@@ -3,13 +3,13 @@
 **Capability:** `address-deduplication`  
 **Change Type:** Bug Fix (Field Preservation)
 
-## MODIFIED Requirements
+## ADDED Requirements
 
 ### Requirement: Preserve all address component fields in canonical aggregation
 
 **The system SHALL extract building and staircase fields along with other address components when creating canonical addresses from sorted variants.**
 
-**Status:** Modified  
+**Status:** Added  
 **Priority:** High  
 **Rationale:** Canonical addresses must include all structured address components (county, settlement, street, house_number, building, staircase, full_address) to maintain data integrity and enable structured querying. Previously, building and staircase fields were lost during aggregation.
 
@@ -128,7 +128,7 @@ aggregation_columns = [
 
 **CSV exports SHALL include non-NULL building and staircase values when these components exist in the canonical address.**
 
-**Status:** Modified  
+**Status:** Added  
 **Priority:** Medium  
 **Rationale:** CSV exports must reflect the correct canonical address data with all component fields populated for downstream analysis and querying.
 
@@ -174,7 +174,7 @@ awk -F',' '$7 != "" && $7 != "NULL"' Address_*.csv | wc -l
 
 **PostgreSQL INSERT statements SHALL include building and staircase column values to enable structured SQL queries.**
 
-**Status:** Modified  
+**Status:** Added  
 **Priority:** Medium  
 **Rationale:** PostgreSQL database must have complete structured address data for SQL querying by building and staircase.
 
