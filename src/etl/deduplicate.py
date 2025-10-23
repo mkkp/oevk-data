@@ -721,6 +721,8 @@ class AddressDeduplicator:
             pl.first("settlement_name").alias("settlement_name"),
             pl.first("street_name").alias("street_name"),
             pl.first("house_number").alias("house_number"),
+            pl.first("building").alias("building"),
+            pl.first("staircase").alias("staircase"),
             pl.first("full_address").alias("full_address"),
         ]
 

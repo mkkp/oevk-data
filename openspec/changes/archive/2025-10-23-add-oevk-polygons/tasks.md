@@ -91,10 +91,10 @@
 
 ### Phase 6: Documentation
 
-- [ ] **Update functional requirements**
-  - File: `docs/FUNCTIONAL_REQUIREMENTS.md` (if exists)
-  - Document OEVK `Center` and `Polygon` columns
-  - Note TEVK does NOT have polygon columns
+- [x] **Update functional requirements**
+  - File: `docs/FUNCTIONAL_REQUIREMENTS.md`
+  - ✅ OEVK `Center` and `Polygon` columns already documented
+  - ✅ TEVK correctly shown without polygon columns in ER diagram
 
 - [x] **Update README data model section**
   - File: `README.md`
