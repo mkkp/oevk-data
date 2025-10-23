@@ -1,14 +1,15 @@
 """Export logic for generating CSV files from target tables."""
 
+import json
 import os
+import shutil
 import sys
 import uuid
-import csv
-import json
-import shutil
-import duckdb
 from pathlib import Path
 
+import duckdb
+
+from src.utils.config import get_config
 from src.utils.pipeline_logging import get_logger
 
 logger = get_logger(__name__)
@@ -22,6 +23,100 @@ def to_uuid3(value):
     if value is None or value == "":
         return None
     return str(uuid.uuid3(OEVK_NAMESPACE, str(value)))
+
+
+def convert_center_to_point(center_text: str | None) -> str | None:
+    """Convert center TEXT 'lat lon' to PostGIS POINT WKT format.
+
+    Converts space-separated latitude/longitude coordinates to Well-Known Text (WKT)
+    format suitable for PostGIS ST_GeomFromText() function. Swaps coordinate order
+    from (lat, lon) to (lon, lat) as required by OGC/PostGIS standards.
+
+    Args:
+        center_text: Space-separated coordinates "lat lon" (e.g., "47.4979 19.0402")
+
+    Returns:
+        WKT POINT string "POINT(lon lat)" or None if input is invalid
+    """
+    if not center_text or center_text.strip() == "":
+        return None
+
+    try:
+        parts = center_text.strip().split()
+        if len(parts) != 2:
+            logger.warning(f"Invalid center format (expected 'lat lon'): {center_text}")
+            return None
+
+        lat = float(parts[0])
+        lon = float(parts[1])
+
+        # Validate coordinate ranges (WGS 84 bounds)
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            logger.warning(f"Coordinates out of range: lat={lat}, lon={lon}")
+            return None
+
+        # Return WKT with lon, lat order (PostGIS/OGC standard)
+        return f"POINT({lon} {lat})"
+
+    except (ValueError, IndexError) as e:
+        logger.error(f"Error converting center '{center_text}': {e}")
+        return None
+
+
+def convert_polygon_to_wkt(polygon_text: str | None) -> str | None:
+    """Convert polygon TEXT to PostGIS POLYGON WKT format.
+
+    Converts comma-separated coordinate pairs to Well-Known Text (WKT) format
+    suitable for PostGIS ST_GeomFromText() function. Swaps coordinate order
+    from (lat, lon) to (lon, lat) and auto-closes polygons if needed.
+
+    Args:
+        polygon_text: Comma-separated coordinate pairs "lat1 lon1,lat2 lon2,..."
+                     (e.g., "47.5 19.0,47.5 19.1,47.4 19.1")
+
+    Returns:
+        WKT POLYGON string "POLYGON((lon1 lat1, lon2 lat2, ...))" or None if invalid
+    """
+    if not polygon_text or polygon_text.strip() == "":
+        return None
+
+    try:
+        pairs = polygon_text.strip().split(',')
+        coords = []
+
+        for pair in pairs:
+            parts = pair.strip().split()
+            if len(parts) != 2:
+                logger.warning(f"Invalid coordinate pair: {pair}")
+                continue
+
+            lat = float(parts[0])
+            lon = float(parts[1])
+
+            # Validate coordinate ranges (WGS 84 bounds)
+            if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+                logger.warning(f"Coordinates out of range: lat={lat}, lon={lon}")
+                continue
+
+            # Swap to (lon, lat) order for PostGIS
+            coords.append((lon, lat))
+
+        # PostGIS requires at least 3 points for a polygon
+        if len(coords) < 3:
+            logger.warning(f"Polygon must have at least 3 points, got {len(coords)}")
+            return None
+
+        # Auto-close polygon: first point must equal last point
+        if coords[0] != coords[-1]:
+            coords.append(coords[0])
+
+        # Format as WKT: POLYGON((lon1 lat1, lon2 lat2, ...))
+        coord_str = ', '.join(f"{lon} {lat}" for lon, lat in coords)
+        return f"POLYGON(({coord_str}))"
+
+    except (ValueError, IndexError) as e:
+        logger.error(f"Error converting polygon '{polygon_text}': {e}")
+        return None
 
 
 def generate_postgresql_schema():
@@ -389,12 +484,18 @@ def export_table_to_postgresql(
     """Exports a single table to PostgreSQL INSERT statements.
 
     Converts xxhash64 ID values to UUID v3 format.
+    For NationalIndividualElectoralDistrict table, converts Center and Polygon
+    to PostGIS GEOMETRY format if POSTGRESQL_USE_POSTGIS is enabled.
 
     Args:
         db_connection: An active DuckDB connection.
         table_name: Name of the table to export.
         output_file: File handle to write INSERT statements to.
     """
+    # Get PostGIS configuration
+    config = get_config()
+    use_postgis = config.get_postgresql_settings().get("use_postgis", True)
+
     # Get column names and types
     schema_info = db_connection.execute(f"PRAGMA table_info({table_name})").fetchall()
     columns = [col[1] for col in schema_info]  # col[1] is the column name
@@ -405,6 +506,11 @@ def export_table_to_postgresql(
         if col_name == "ID" or col_name.endswith("_ID"):
             id_columns.add(col_name)
 
+    # Check if this is the OEVK table with geospatial data
+    is_oevk_table = table_name == "NationalIndividualElectoralDistrict"
+    center_idx = columns.index("Center") if "Center" in columns else -1
+    polygon_idx = columns.index("Polygon") if "Polygon" in columns else -1
+
     # Fetch all rows
     rows = db_connection.execute(f"SELECT * FROM {table_name}").fetchall()
 
@@ -414,6 +520,10 @@ def export_table_to_postgresql(
 
     output_file.write(f"-- Table: {table_name}\n")
     output_file.write(f"-- Rows: {len(rows)}\n")
+    if is_oevk_table and use_postgis:
+        output_file.write("-- PostGIS: Enabled (Center and Polygon as GEOMETRY)\n")
+    elif is_oevk_table:
+        output_file.write("-- PostGIS: Disabled (Center and Polygon as TEXT)\n")
 
     # Generate INSERT statements
     for row in rows:
@@ -421,8 +531,23 @@ def export_table_to_postgresql(
         for i, value in enumerate(row):
             col_name = columns[i]
 
+            # Handle PostGIS conversion for OEVK Center and Polygon
+            if is_oevk_table and use_postgis and i == center_idx:
+                # Convert Center to PostGIS POINT
+                wkt = convert_center_to_point(value)
+                if wkt:
+                    values.append(f"ST_GeomFromText('{wkt}', 4326)")
+                else:
+                    values.append("NULL")
+            elif is_oevk_table and use_postgis and i == polygon_idx:
+                # Convert Polygon to PostGIS POLYGON
+                wkt = convert_polygon_to_wkt(value)
+                if wkt:
+                    values.append(f"ST_GeomFromText('{wkt}', 4326)")
+                else:
+                    values.append("NULL")
             # Convert ID columns to UUID
-            if col_name in id_columns:
+            elif col_name in id_columns:
                 uuid_value = to_uuid3(value)
                 if uuid_value is None:
                     values.append("NULL")

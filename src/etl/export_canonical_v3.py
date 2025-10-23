@@ -1,13 +1,15 @@
-"""Export canonical addresses with UUID v3 - optimized single-query approach."""
+"""Export canonical addresses with UUID v3 - optimized single-query approach.
 
-import os
-import uuid
+Includes PostGIS coordinate conversion functions for OEVK geospatial data.
+"""
+
 import csv
-import duckdb
+import os
 import time
-import shutil
-import glob
+import uuid
 from collections import defaultdict
+
+import duckdb
 
 from src.utils.pipeline_logging import get_logger
 
@@ -86,6 +88,116 @@ def trim_leading_zeros_udf(value):
 
     # Non-numeric values remain unchanged
     return value_str
+
+
+def convert_center_to_point(center_text: str | None) -> str | None:
+    """Convert center TEXT 'lat lon' to PostGIS POINT WKT format.
+
+    Converts space-separated latitude/longitude coordinates to Well-Known Text (WKT)
+    format suitable for PostGIS ST_GeomFromText() function. Swaps coordinate order
+    from (lat, lon) to (lon, lat) as required by OGC/PostGIS standards.
+
+    Args:
+        center_text: Space-separated coordinates "lat lon" (e.g., "47.4979 19.0402")
+
+    Returns:
+        WKT POINT string "POINT(lon lat)" or None if input is invalid
+
+    Examples:
+        >>> convert_center_to_point("47.4979 19.0402")
+        'POINT(19.0402 47.4979)'
+        >>> convert_center_to_point(None)
+        None
+        >>> convert_center_to_point("91.0 19.0")  # Invalid latitude
+        None
+    """
+    if not center_text or center_text.strip() == "":
+        return None
+
+    try:
+        parts = center_text.strip().split()
+        if len(parts) != 2:
+            logger.warning(f"Invalid center format (expected 'lat lon'): {center_text}")
+            return None
+
+        lat = float(parts[0])
+        lon = float(parts[1])
+
+        # Validate coordinate ranges (WGS 84 bounds)
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            logger.warning(f"Coordinates out of range: lat={lat}, lon={lon}")
+            return None
+
+        # Return WKT with lon, lat order (PostGIS/OGC standard)
+        return f"POINT({lon} {lat})"
+
+    except (ValueError, IndexError) as e:
+        logger.error(f"Error converting center '{center_text}': {e}")
+        return None
+
+
+def convert_polygon_to_wkt(polygon_text: str | None) -> str | None:
+    """Convert polygon TEXT to PostGIS POLYGON WKT format.
+
+    Converts comma-separated coordinate pairs to Well-Known Text (WKT) format
+    suitable for PostGIS ST_GeomFromText() function. Swaps coordinate order
+    from (lat, lon) to (lon, lat) and auto-closes polygons if needed.
+
+    Args:
+        polygon_text: Comma-separated coordinate pairs "lat1 lon1,lat2 lon2,..."
+                     (e.g., "47.5 19.0,47.5 19.1,47.4 19.1")
+
+    Returns:
+        WKT POLYGON string "POLYGON((lon1 lat1, lon2 lat2, ...))" or None if invalid
+
+    Examples:
+        >>> convert_polygon_to_wkt("47.5 19.0,47.5 19.1,47.4 19.1")
+        'POLYGON((19.0 47.5, 19.1 47.5, 19.1 47.4, 19.0 47.5))'
+        >>> convert_polygon_to_wkt(None)
+        None
+        >>> convert_polygon_to_wkt("47.0 19.0,47.1 19.1")  # Less than 3 points
+        None
+    """
+    if not polygon_text or polygon_text.strip() == "":
+        return None
+
+    try:
+        pairs = polygon_text.strip().split(',')
+        coords = []
+
+        for pair in pairs:
+            parts = pair.strip().split()
+            if len(parts) != 2:
+                logger.warning(f"Invalid coordinate pair: {pair}")
+                continue
+
+            lat = float(parts[0])
+            lon = float(parts[1])
+
+            # Validate coordinate ranges (WGS 84 bounds)
+            if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+                logger.warning(f"Coordinates out of range: lat={lat}, lon={lon}")
+                continue
+
+            # Swap to (lon, lat) order for PostGIS
+            coords.append((lon, lat))
+
+        # PostGIS requires at least 3 points for a polygon
+        if len(coords) < 3:
+            logger.warning(f"Polygon must have at least 3 points, got {len(coords)}")
+            return None
+
+        # Auto-close polygon: first point must equal last point
+        if coords[0] != coords[-1]:
+            coords.append(coords[0])
+
+        # Format as WKT: POLYGON((lon1 lat1, lon2 lat2, ...))
+        coord_str = ', '.join(f"{lon} {lat}" for lon, lat in coords)
+        return f"POLYGON(({coord_str}))"
+
+    except (ValueError, IndexError) as e:
+        logger.error(f"Error converting polygon '{polygon_text}': {e}")
+        return None
 
 
 def export_canonical_addresses_optimized(
@@ -301,7 +413,8 @@ def export_canonical_addresses_optimized(
                         # For NOT NULL columns, return empty string instead of NULL
                         return "''" if allow_empty_string else "NULL"
                     elif isinstance(value, str):
-                        return f"'{value.replace("'", "''")}'"
+                        escaped_value = value.replace("'", "''")
+                        return f"'{escaped_value}'"
                     else:
                         return str(value)
 

@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgis/postgis:15-3.3
+    container_name: oevk-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-oevk_data}
+      POSTGRES_USER: ${POSTGRES_USER:-oevk_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./exports/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - ./exports/data.sql:/docker-entrypoint-initdb.d/02_data.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-oevk_user} -d ${POSTGRES_DB:-oevk_data}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - oevk-network
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  oevk-network:
+    driver: bridge
