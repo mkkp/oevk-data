@@ -9,6 +9,45 @@
 
 The address deduplication process loses building and staircase component fields during canonical address aggregation, causing data integrity issues where formatted addresses contain information not available in structured fields.
 
+## What Changes
+
+This proposal fixes the field loss bug in the deduplication process by adding two missing fields to the aggregation logic:
+
+### Code Changes
+- **File**: `src/etl/deduplicate.py` (line ~727)
+- **Change**: Add `building` and `staircase` to aggregation columns in `_create_canonical_addresses()` method
+- **Lines added**: 2 lines
+- **Risk**: Very low (simple field extraction)
+
+### Affected Components
+- **MODIFIED**: `src/etl/deduplicate.py` - Add 2 fields to aggregation
+- **ADDED**: `tests/contract/test_deduplication_logic.py` - 3 new contract tests
+- **ADDED**: `tests/integration/test_deduplication_integrity.py` - 2 new integration tests
+- **UPDATED**: `docs/DEDUPLICATION_FEATURE_HISTORY.md` - Document bug fix
+
+### Breaking Changes
+**None** - This is a bug fix that populates previously NULL fields. No API changes, no behavior changes to existing functionality.
+
+## Impact
+
+### Affected Specs
+- **MODIFIED**: `address-deduplication` - Field preservation requirements added
+- **MODIFIED**: `canonical-address-export` - Export includes building/staircase fields
+
+### Affected Code
+- `src/etl/deduplicate.py` - 2 lines added to aggregation
+- `tests/contract/test_deduplication_logic.py` - 3 new test cases
+- `tests/integration/test_deduplication_integrity.py` - 2 new test cases
+
+### Data Impact
+- **Before**: Building and Staircase fields mostly NULL in canonical addresses (~3.3M addresses)
+- **After**: Fields correctly populated from best-scored variants
+- **No change**: FullAddress formatting, canonical IDs, deduplication detection
+
+### Performance Impact
+- **Negligible**: Adding two fields to existing aggregation (O(1) per group)
+- **No additional processing**: Uses existing sorted dataframe
+
 ## Problem Statement
 
 The address deduplication process correctly generates `FullAddress` strings but fails to preserve the `Building` and `Staircase` component fields in canonical address records. This results in a data integrity issue where:

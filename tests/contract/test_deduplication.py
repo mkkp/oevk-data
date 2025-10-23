@@ -493,5 +493,105 @@ class TestDeduplicateAddresses:
         )
 
 
+    def test_deduplicate_addresses_preserves_building_field(self):
+        """Test that building field is preserved in canonical addresses."""
+        deduplicator = AddressDeduplicator()
+        import polars as pl
+
+        # Create test data with building field
+        test_data = pl.DataFrame(
+            {
+                "address_id": ["addr1", "addr2"],
+                "county_code": ["01", "01"],
+                "settlement_name": ["Budapest", "Budapest"],
+                "street_name": ["Fő", "Fő"],
+                "street_type": ["utca", "utca"],
+                "house_number": ["1", "1"],
+                "building": ["A", "A"],  # Building field that should be preserved
+                "staircase": ["1", "1"],
+                "polling_station_id": ["ps1", "ps2"],
+                "accessibility_flag": [True, False],
+                "pir_code": ["pir1", "pir2"],
+            }
+        )
+
+        result = deduplicator.deduplicate_addresses(test_data, generate_report=False)
+        canonical_addresses = result["canonical_addresses"]
+
+        # Verify building field exists in canonical addresses
+        assert "building" in canonical_addresses.schema
+        # Verify building field value is preserved
+        assert canonical_addresses["building"][0] == "A"
+
+    def test_deduplicate_addresses_preserves_staircase_field(self):
+        """Test that staircase field is preserved in canonical addresses."""
+        deduplicator = AddressDeduplicator()
+        import polars as pl
+
+        # Create test data with staircase field
+        test_data = pl.DataFrame(
+            {
+                "address_id": ["addr1", "addr2"],
+                "county_code": ["01", "01"],
+                "settlement_name": ["Budapest", "Budapest"],
+                "street_name": ["Fő", "Fő"],
+                "street_type": ["utca", "utca"],
+                "house_number": ["1", "1"],
+                "building": ["A", "A"],
+                "staircase": ["2", "2"],  # Staircase field that should be preserved
+                "polling_station_id": ["ps1", "ps2"],
+                "accessibility_flag": [True, False],
+                "pir_code": ["pir1", "pir2"],
+            }
+        )
+
+        result = deduplicator.deduplicate_addresses(test_data, generate_report=False)
+        canonical_addresses = result["canonical_addresses"]
+
+        # Verify staircase field exists in canonical addresses
+        assert "staircase" in canonical_addresses.schema
+        # Verify staircase field value is preserved
+        assert canonical_addresses["staircase"][0] == "2"
+
+    def test_deduplicate_addresses_preserves_building_and_staircase_together(self):
+        """Test that building and staircase fields are preserved together in canonical addresses."""
+        deduplicator = AddressDeduplicator()
+        import polars as pl
+
+        # Create test data with both building and staircase fields
+        test_data = pl.DataFrame(
+            {
+                "address_id": ["addr1", "addr2", "addr3"],
+                "county_code": ["01", "01", "01"],
+                "settlement_name": ["Budapest", "Budapest", "Budapest"],
+                "street_name": ["Fő", "Fő", "Fő"],
+                "street_type": ["utca", "utca", "utca"],
+                "house_number": ["1", "1", "2"],
+                "building": ["A", "A", "B"],  # Different buildings
+                "staircase": ["1", "1", "3"],  # Different staircases
+                "polling_station_id": ["ps1", "ps2", "ps3"],
+                "accessibility_flag": [True, False, True],
+                "pir_code": ["pir1", "pir2", "pir3"],
+            }
+        )
+
+        result = deduplicator.deduplicate_addresses(test_data, generate_report=False)
+        canonical_addresses = result["canonical_addresses"]
+
+        # Verify both fields exist
+        assert "building" in canonical_addresses.schema
+        assert "staircase" in canonical_addresses.schema
+
+        # Verify we have 2 canonical addresses (addr1+addr2 merged, addr3 separate)
+        assert len(canonical_addresses) == 2
+
+        # Verify building/staircase combinations are preserved
+        canonical_df = canonical_addresses.sort("building")
+        assert canonical_df["building"][0] == "A"
+        assert canonical_df["staircase"][0] == "1"
+        assert canonical_df["building"][1] == "B"
+        assert canonical_df["staircase"][1] == "3"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

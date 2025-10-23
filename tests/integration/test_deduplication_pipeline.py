@@ -299,5 +299,82 @@ class TestDeduplicationPipelineIntegration:
         conn.close()
 
 
+    def test_deduplication_preserves_building_and_staircase_fields(self, tmp_path):
+        """Test that building and staircase fields are preserved in canonical addresses."""
+        # Create temporary database
+        db_path = tmp_path / "test.db"
+        conn = duckdb.connect(str(db_path))
+
+        # Register hash functions
+        from src.etl.transform_optimized import register_hash_functions
+
+        register_hash_functions(conn)
+
+        # Create staging table
+        conn.execute("""
+            CREATE TABLE staging_korzet (
+                run_tag VARCHAR,
+                county_code VARCHAR,
+                settlement_code VARCHAR,
+                settlement_name VARCHAR,
+                oevk_code VARCHAR,
+                tevk_code VARCHAR,
+                polling_station_address VARCHAR,
+                postal_code VARCHAR,
+                street_name VARCHAR,
+                street_type VARCHAR,
+                house_number VARCHAR,
+                building VARCHAR,
+                staircase VARCHAR,
+                accessible_flag VARCHAR
+            )
+        """)
+
+        # Insert data with building and staircase fields
+        conn.execute("""
+            INSERT INTO staging_korzet VALUES
+            ('test_run', '01', '001', 'Budapest', '01', '01', 'PS1', '1000', 'Fő', 'utca', '1', 'A', '2', 'I'),
+            ('test_run', '01', '001', 'Budapest', '01', '01', 'PS2', '1000', 'Fő', 'utca', '1', 'A', '2', 'N'),
+            ('test_run', '01', '001', 'Budapest', '01', '01', 'PS3', '1000', 'Fő', 'utca', '1', 'B', '3', 'I')
+        """)
+
+        # Apply schema
+        from src.etl.transform_optimized import apply_target_schema
+
+        apply_target_schema(conn)
+
+        # Run deduplication
+        result = deduplicate_addresses_in_pipeline(
+            conn, "test_run", enable_deduplication=True
+        )
+
+        # Verify we have 2 canonical addresses (Building A/Staircase 2 and Building B/Staircase 3)
+        canonical_count = conn.execute(
+            "SELECT COUNT(*) FROM CanonicalAddress"
+        ).fetchone()[0]
+        assert canonical_count == 2
+
+        # Verify building and staircase fields are preserved in canonical addresses
+        addresses = conn.execute("""
+            SELECT Building, Staircase FROM CanonicalAddress ORDER BY Building
+        """).fetchall()
+
+        assert len(addresses) == 2
+        # First canonical address: Building A, Staircase 2
+        assert addresses[0][0] == "A"
+        assert addresses[0][1] == "2"
+        # Second canonical address: Building B, Staircase 3
+        assert addresses[1][0] == "B"
+        assert addresses[1][1] == "3"
+
+        # Verify all 3 polling stations are preserved
+        polling_count = conn.execute(
+            "SELECT COUNT(*) FROM AddressPollingStations"
+        ).fetchone()[0]
+        assert polling_count == 3
+
+        conn.close()
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
