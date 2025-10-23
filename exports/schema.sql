@@ -5,6 +5,9 @@
 -- Database Schema for OEVK Data Transformation
 -- All primary keys are xxhash64 digests stored as lowercase hexadecimal strings
 
+-- PostGIS extension for geospatial data support
+CREATE EXTENSION IF NOT EXISTS postgis;
+
 -- County table
 CREATE TABLE IF NOT EXISTS County (
     ID UUID PRIMARY KEY, -- xxhash64(CountyCode)
@@ -27,8 +30,8 @@ CREATE TABLE IF NOT EXISTS NationalIndividualElectoralDistrict (
     ID UUID PRIMARY KEY, -- xxhash64(CountyCode|OEVK)
     OEVK TEXT NOT NULL,
     Name TEXT NOT NULL,
-    Center TEXT, -- Center point coordinates (space-separated: "lat lon")
-    Polygon TEXT, -- Boundary polygon coordinates (comma-separated pairs: "lat1 lon1,lat2 lon2,...")
+    Center GEOMETRY(POINT, 4326), -- Center point coordinates using PostGIS (SRID 4326 = WGS 84)
+    Polygon GEOMETRY(POLYGON, 4326), -- Boundary polygon coordinates using PostGIS (SRID 4326 = WGS 84)
     County_ID UUID NOT NULL,
     FOREIGN KEY (County_ID) REFERENCES County(ID),
     UNIQUE (County_ID, OEVK)
@@ -111,6 +114,10 @@ CREATE INDEX IF NOT EXISTS idx_County_CountyCode ON County(CountyCode);
 CREATE INDEX IF NOT EXISTS idx_Settlement_County_ID ON Settlement(County_ID);
 CREATE INDEX IF NOT EXISTS idx_Settlement_County_SettlementCode ON Settlement(County_ID, SettlementCode);
 CREATE INDEX IF NOT EXISTS idx_NationalIndividualElectoralDistrict_County_ID ON NationalIndividualElectoralDistrict(County_ID);
+
+-- Spatial indexes for geospatial queries on OEVK geometries
+CREATE INDEX IF NOT EXISTS idx_oevk_center_gist ON NationalIndividualElectoralDistrict USING GIST (Center);
+CREATE INDEX IF NOT EXISTS idx_oevk_polygon_gist ON NationalIndividualElectoralDistrict USING GIST (Polygon);
 CREATE INDEX IF NOT EXISTS idx_SettlementIndividualElectoralDistrict_County_ID ON SettlementIndividualElectoralDistrict(County_ID);
 CREATE INDEX IF NOT EXISTS idx_SettlementIndividualElectoralDistrict_Settlement_ID ON SettlementIndividualElectoralDistrict(Settlement_ID);
 CREATE INDEX IF NOT EXISTS idx_PostalCode_Settlement_PostalCode_ID ON PostalCode_Settlement(PostalCode_ID);

@@ -1,8 +1,8 @@
 """Configuration management for OEVK data transformation application."""
 
 import os
-from typing import Dict, Any, Optional
 from pathlib import Path
+from typing import Any, Dict, Optional
 
 
 class Config:
@@ -74,6 +74,7 @@ class Config:
                 "db": "oevk",
                 "user": "oevk",
                 "password": "oevk",
+                "use_postgis": True,  # Enable PostGIS extension for geospatial data
             },
         }
 
@@ -190,6 +191,13 @@ class Config:
         postgres_password = os.getenv("POSTGRES_PASSWORD")
         if postgres_password:
             self._config["postgresql"]["password"] = postgres_password
+
+        # PostGIS setting - defaults to true for geospatial support
+        postgres_use_postgis = os.getenv("POSTGRESQL_USE_POSTGIS")
+        if postgres_use_postgis is not None:
+            self._config["postgresql"]["use_postgis"] = (
+                postgres_use_postgis.lower() == "true"
+            )
 
     def _create_directories(self) -> None:
         """Create required directories if they don't exist."""
