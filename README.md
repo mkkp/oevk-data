@@ -913,11 +913,14 @@ flowchart TD
 ### Key Relationships
 
 - Each address belongs to exactly one polling station
-- Each polling station belongs to exactly one TEVK
-- Each TEVK belongs to exactly one OEVK
+- Each address is assigned to both one TEVK and one OEVK (parallel systems)
+- Each TEVK belongs to exactly one settlement
+- Each OEVK belongs to exactly one county
 - Each settlement belongs to exactly one county
 - Postal codes can span multiple settlements
 - Public spaces are extracted from addresses and linked to settlements
+
+**Note:** TEVK and OEVK are independent electoral systems. TEVK is NOT subordinate to OEVK.
 - Each public space has a name and type (utca, tér, etc.)
 - Settlements can have multiple public spaces, and public spaces can appear in multiple settlements
 
