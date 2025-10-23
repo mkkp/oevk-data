@@ -1,5 +1,6 @@
 """Ingestion logic for downloading and loading OEVK data into staging tables."""
 
+import json
 import os
 import zipfile
 from typing import Dict
@@ -81,6 +82,74 @@ def download_sources(sources: Dict[str, str], staging_dir: str) -> Dict[str, str
     return file_paths
 
 
+def load_oevk_json(db_connection: duckdb.DuckDBPyConnection,
+                   json_path: str,
+                   run_tag: str) -> int:
+    """Load OEVK JSON data into staging_oevk_json table.
+
+    Args:
+        db_connection: An active DuckDB connection.
+        json_path: Path to the oevk.json file.
+        run_tag: A tag to identify the current run in the staging table.
+
+    Returns:
+        Number of records loaded.
+
+    Raises:
+        FileNotFoundError: If the JSON file is not found.
+        json.JSONDecodeError: If the JSON file is malformed.
+    """
+    try:
+        logger.info(f"Loading OEVK JSON from {json_path}")
+
+        if not os.path.exists(json_path):
+            raise FileNotFoundError(f"OEVK JSON file not found: {json_path}")
+
+        # Parse JSON file
+        with open(json_path, 'r', encoding='utf-8') as f:
+            oevk_data = json.load(f)
+
+        if not isinstance(oevk_data, list):
+            raise ValueError(f"Expected JSON array, got {type(oevk_data)}")
+
+        # Prepare records for insertion
+        records = []
+        for item in oevk_data:
+            record = (
+                item.get('maz', ''),  # County code
+                item.get('evk', ''),  # OEVK code
+                item.get('centrum'),  # Center coordinates
+                item.get('poligon'),  # Polygon coordinates
+                run_tag
+            )
+            records.append(record)
+
+        # Insert records using executemany with ON CONFLICT handling
+        db_connection.executemany("""
+            INSERT INTO staging_oevk_json (maz, evk, centrum, poligon, run_tag)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT (maz, evk, run_tag) DO UPDATE SET
+                centrum = EXCLUDED.centrum,
+                poligon = EXCLUDED.poligon
+        """, records)
+
+        logger.info(f"Loaded {len(records)} OEVK polygon records into staging_oevk_json")
+        return len(records)
+
+    except FileNotFoundError as e:
+        logger.warning(f"OEVK JSON file not found: {e}")
+        logger.warning("OEVK polygon data will be NULL for all districts")
+        return 0
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse OEVK JSON: {e}")
+        logger.warning("OEVK polygon data will be NULL for all districts")
+        return 0
+    except Exception as e:
+        logger.error(f"Unexpected error loading OEVK JSON: {e}")
+        logger.warning("OEVK polygon data will be NULL for all districts")
+        return 0
+
+
 def load_staging_data(db_connection: duckdb.DuckDBPyConnection,
                      file_paths: Dict[str, str],
                      run_tag: str) -> None:
@@ -96,10 +165,14 @@ def load_staging_data(db_connection: duckdb.DuckDBPyConnection,
     # Create staging tables if they don't exist
     create_staging_tables(db_connection)
 
-    # Load OEVK JSON data
+    # Load OEVK JSON polygon data (new)
     oevk_json_path = file_paths.get('oevk_json')
     if oevk_json_path and os.path.exists(oevk_json_path):
-        logger.info(f"Loading OEVK JSON data from {oevk_json_path}")
+        load_oevk_json(db_connection, oevk_json_path, run_tag)
+
+    # Load OEVK JSON data (existing legacy staging)
+    if oevk_json_path and os.path.exists(oevk_json_path):
+        logger.info(f"Loading OEVK JSON data into legacy staging_oevk from {oevk_json_path}")
 
         # Load JSON data into a temporary table
         db_connection.execute("""
@@ -120,7 +193,7 @@ def load_staging_data(db_connection: duckdb.DuckDBPyConnection,
             SELECT COUNT(*) FROM staging_oevk WHERE run_tag = ?
         """, [run_tag]).fetchone()[0]
 
-        logger.info(f"Loaded {row_count} OEVK records")
+        logger.info(f"Loaded {row_count} OEVK records into legacy staging_oevk")
 
     # Load Korzet CSV data
     korzet_csv_path = file_paths.get('korzet_csv')
@@ -130,10 +203,10 @@ def load_staging_data(db_connection: duckdb.DuckDBPyConnection,
         # Load CSV data into a temporary table - skip header to avoid BOM issues
         db_connection.execute("""
             CREATE TEMPORARY TABLE temp_korzet AS
-            SELECT * FROM read_csv(?, 
-                header=false, 
-                delim=';', 
-                ignore_errors=true, 
+            SELECT * FROM read_csv(?,
+                header=false,
+                delim=';',
+                ignore_errors=true,
                 sample_size=-1,
                 encoding='UTF-8',
                 skip=1
@@ -143,21 +216,21 @@ def load_staging_data(db_connection: duckdb.DuckDBPyConnection,
         # Insert into staging table with run_tag - use column positions to avoid BOM issues
         db_connection.execute("""
             INSERT INTO staging_korzet (
-                run_tag, county_code, county_name, oevk_code, settlement_code, 
+                run_tag, county_code, county_name, oevk_code, settlement_code,
                 settlement_name, tevk_code, polling_station_code, polling_station_address,
                 counting_designated, accessible, postal_code, street_name, street_type,
                 house_number, building, staircase, gate_code, additional_info
             )
-            SELECT ?, 
-                   trim(column00, '\"'), trim(column01, '\"'), 
-                   trim(column02, '\"'), trim(column03, '\"'), 
-                   trim(column04, '\"'), trim(column05, '\"'), 
+            SELECT ?,
+                   trim(column00, '\"'), trim(column01, '\"'),
+                   trim(column02, '\"'), trim(column03, '\"'),
+                   trim(column04, '\"'), trim(column05, '\"'),
                    trim(column06, '\"'), trim(column07, '\"'),
-                   trim(column08, '\"'), trim(column09, '\"'), 
+                   trim(column08, '\"'), trim(column09, '\"'),
                    CASE WHEN column10 IS NULL THEN NULL ELSE trim(CAST(column10 AS VARCHAR), '\"') END,  -- postal_code
                    trim(column11, '\"'), trim(column12, '\"'),
-                   trim(column13, '\"'), trim(column14, '\"'), 
-                   trim(column15, '\"'), CASE WHEN column16 IS NULL THEN NULL ELSE trim(CAST(column16 AS VARCHAR), '\"') END, 
+                   trim(column13, '\"'), trim(column14, '\"'),
+                   trim(column15, '\"'), CASE WHEN column16 IS NULL THEN NULL ELSE trim(CAST(column16 AS VARCHAR), '\"') END,
                    trim(column17, '\"')
             FROM temp_korzet
         """, [run_tag])

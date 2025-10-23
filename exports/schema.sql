@@ -27,6 +27,8 @@ CREATE TABLE IF NOT EXISTS NationalIndividualElectoralDistrict (
     ID UUID PRIMARY KEY, -- xxhash64(CountyCode|OEVK)
     OEVK TEXT NOT NULL,
     Name TEXT NOT NULL,
+    Center TEXT, -- Center point coordinates (space-separated: "lat lon")
+    Polygon TEXT, -- Boundary polygon coordinates (comma-separated pairs: "lat1 lon1,lat2 lon2,...")
     County_ID UUID NOT NULL,
     FOREIGN KEY (County_ID) REFERENCES County(ID),
     UNIQUE (County_ID, OEVK)
@@ -37,8 +39,6 @@ CREATE TABLE IF NOT EXISTS SettlementIndividualElectoralDistrict (
     ID UUID PRIMARY KEY, -- xxhash64(CountyCode|SettlementCode|TEVK|OEVK)
     TEVK TEXT,
     Name TEXT NOT NULL,
-    Center TEXT, -- Coordinate center point (e.g., WKT POINT format) for polling district boundary
-    Polygon TEXT, -- Coordinate polygon (e.g., WKT POLYGON format) for polling district boundary
     County_ID UUID NOT NULL,
     Settlement_ID UUID NOT NULL,
     NationalIndividualElectoralDistrict_ID UUID NOT NULL,
