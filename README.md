@@ -650,7 +650,7 @@ The pipeline transforms source data into 14 normalized tables:
 1. **County** (`megye`) - Administrative counties
 2. **Settlement** (`település`) - Cities, towns, villages
 3. **NationalIndividualElectoralDistrict** (`OEVK`) - National electoral districts
-4. **SettlementIndividualElectoralDistrict** (`TEVK`) - Settlement-level electoral districts
+4. **SettlementIndividualElectoralDistrict** (`TEVK`) - Settlement-level electoral districts (independent of OEVK)
 5. **PostalCode** (`irányítószám`) - Postal codes
 6. **PostalCode_Settlement** - Junction table for postal code-settlement relationships
 7. **PollingStation** (`szavazókör`) - Voting locations
@@ -670,8 +670,8 @@ erDiagram
     County ||--o{ Settlement : contains
     County ||--o{ NationalIndividualElectoralDistrict : contains
     Settlement ||--o{ SettlementIndividualElectoralDistrict : contains
-    NationalIndividualElectoralDistrict ||--o{ SettlementIndividualElectoralDistrict : contains
-    SettlementIndividualElectoralDistrict ||--o{ PollingStation : contains
+    SettlementIndividualElectoralDistrict ||--o{ Address : "assigned to"
+    NationalIndividualElectoralDistrict ||--o{ Address : "assigned to"
     PollingStation ||--o{ Address : contains
     PostalCode ||--o{ PostalCode_Settlement : has
     Settlement ||--o{ PostalCode_Settlement : has
@@ -704,12 +704,11 @@ erDiagram
         string County_ID FK
     }
     SettlementIndividualElectoralDistrict {
-        string ID PK "xxhash64(CountyCode|SettlementCode|TEVK|OEVK)"
+        string ID PK "xxhash64(CountyCode|SettlementCode|TEVK)"
         string TEVK
         string Name
         string County_ID FK
         string Settlement_ID FK
-        string NationalIndividualElectoralDistrict_ID FK
     }
     PostalCode {
         string ID PK "xxhash64(PostalCode)"
@@ -785,6 +784,9 @@ erDiagram
         string PIRCode FK
     }
 ```
+
+**Note on TEVK and OEVK Relationship:**  
+TEVK (SettlementIndividualElectoralDistrict) and OEVK (NationalIndividualElectoralDistrict) are **parallel, independent electoral systems**, not hierarchical. TEVK is for settlement-level municipal elections organized by settlement boundaries, while OEVK is for national parliamentary elections organized by county boundaries. Addresses maintain references to both systems independently via the Address table.
 
 ### Transformation Flow
 

@@ -36,16 +36,14 @@ CREATE TABLE IF NOT EXISTS NationalIndividualElectoralDistrict (
 
 -- SettlementIndividualElectoralDistrict (TEVK) table
 CREATE TABLE IF NOT EXISTS SettlementIndividualElectoralDistrict (
-    ID UUID PRIMARY KEY, -- xxhash64(CountyCode|SettlementCode|TEVK|OEVK)
+    ID UUID PRIMARY KEY, -- xxhash64(CountyCode|SettlementCode|TEVK)
     TEVK TEXT,
     Name TEXT NOT NULL,
     County_ID UUID NOT NULL,
     Settlement_ID UUID NOT NULL,
-    NationalIndividualElectoralDistrict_ID UUID NOT NULL,
     FOREIGN KEY (County_ID) REFERENCES County(ID),
     FOREIGN KEY (Settlement_ID) REFERENCES Settlement(ID),
-    FOREIGN KEY (NationalIndividualElectoralDistrict_ID) REFERENCES NationalIndividualElectoralDistrict(ID),
-    UNIQUE (County_ID, Settlement_ID, TEVK, NationalIndividualElectoralDistrict_ID)
+    UNIQUE (County_ID, Settlement_ID, TEVK)
 );
 
 -- PostalCode table

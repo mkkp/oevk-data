@@ -44,21 +44,23 @@ def hash_oevk_id(county_code: str, oevk: str) -> str:
     return xxhash.xxh64(data).hexdigest()
 
 
-def hash_tevk_id(county_code: str, settlement_code: str, tevk: str, oevk: str) -> str:
+def hash_tevk_id(county_code: str, settlement_code: str, tevk: str) -> str:
     """Generate hash ID for SettlementIndividualElectoralDistrict (TEVK) entity.
+
+    TEVK is independent of OEVK - they are parallel electoral systems, not hierarchical.
+    TEVK is defined by county, settlement, and TEVK code only.
 
     Args:
         county_code: The unique county code
         settlement_code: The unique settlement code
         tevk: The TEVK code (can be None)
-        oevk: The OEVK code
 
     Returns:
         Hexadecimal string representation of xxhash64 digest
     """
     # Handle None values for TEVK
     tevk_str = str(tevk) if tevk is not None else ""
-    data = f"{county_code}|{settlement_code}|{tevk_str}|{oevk}".encode("utf-8")
+    data = f"{county_code}|{settlement_code}|{tevk_str}".encode("utf-8")
     return xxhash.xxh64(data).hexdigest()
 
 

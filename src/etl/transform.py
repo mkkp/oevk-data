@@ -34,7 +34,7 @@ def register_hash_functions(db_connection: duckdb.DuckDBPyConnection) -> None:
     """)
 
     db_connection.execute("""
-        CREATE OR REPLACE MACRO hash_tevk_id(county_code, settlement_code, tevk, oevk) AS lower(substring(md5(county_code || '|' || settlement_code || '|' || COALESCE(tevk, '') || '|' || oevk), 1, 16))
+        CREATE OR REPLACE MACRO hash_tevk_id(county_code, settlement_code, tevk) AS lower(substring(md5(county_code || '|' || settlement_code || '|' || COALESCE(tevk, '')), 1, 16))
     """)
 
     db_connection.execute("""
@@ -133,7 +133,7 @@ def transform_counties(db_connection: duckdb.DuckDBPyConnection, run_tag: str) -
     db_connection.execute(
         """
         INSERT INTO County (ID, CountyCode, CountyName)
-        SELECT 
+        SELECT
             hash_county_id(county_code) as ID,
             county_code,
             MAX(county_name) as CountyName
@@ -159,7 +159,7 @@ def transform_settlements(
     db_connection.execute(
         """
         INSERT INTO Settlement (ID, SettlementCode, SettlementName, County_ID)
-        SELECT 
+        SELECT
             hash_settlement_id(county_code, settlement_code) as ID,
             settlement_code,
             MAX(settlement_name) as SettlementName,
@@ -186,7 +186,7 @@ def transform_national_individual_electoral_districts(
     db_connection.execute(
         """
         INSERT INTO NationalIndividualElectoralDistrict (ID, OEVK, Name, Center, Polygon, County_ID)
-        SELECT 
+        SELECT
             hash_oevk_id(county_code, oevk_code) as ID,
             oevk_code,
             MAX(settlement_name) || ' ' || oevk_code as Name,
@@ -219,7 +219,7 @@ def transform_postal_codes(
     db_connection.execute(
         """
         INSERT INTO PostalCode (ID, PostalCode)
-        SELECT 
+        SELECT
             hash_postal_code_id(CAST(postal_code AS VARCHAR)) as ID,
             CAST(postal_code AS VARCHAR) as PostalCode
         FROM staging_korzet
@@ -241,28 +241,28 @@ def transform_settlement_individual_electoral_districts(
     logger.info("Transforming SettlementIndividualElectoralDistrict data")
 
     # Extract TEVK data from Korzet CSV
+    # TEVK is independent of OEVK - they are parallel electoral systems
     db_connection.execute(
         """
         INSERT INTO SettlementIndividualElectoralDistrict (
-            ID, TEVK, Name, County_ID, Settlement_ID, NationalIndividualElectoralDistrict_ID
+            ID, TEVK, Name, County_ID, Settlement_ID
         )
-        SELECT 
+        SELECT
             hash_tevk_id(
-                county_code, settlement_code, 
-                COALESCE(tevk_code, '-'), oevk_code
+                county_code, settlement_code,
+                COALESCE(tevk_code, '-')
             ) as ID,
             tevk_code as TEVK,
-            CASE 
-                WHEN tevk_code IS NOT NULL AND tevk_code != '' 
+            CASE
+                WHEN tevk_code IS NOT NULL AND tevk_code != ''
                 THEN MAX(settlement_name) || ' ' || tevk_code
                 ELSE MAX(settlement_name)
             END as Name,
             hash_county_id(county_code) as County_ID,
-            hash_settlement_id(county_code, settlement_code) as Settlement_ID,
-            hash_oevk_id(county_code, oevk_code) as NationalIndividualElectoralDistrict_ID
+            hash_settlement_id(county_code, settlement_code) as Settlement_ID
         FROM staging_korzet
         WHERE run_tag = ?
-        GROUP BY county_code, settlement_code, tevk_code, oevk_code
+        GROUP BY county_code, settlement_code, tevk_code
         ON CONFLICT (ID) DO NOTHING
     """,
         [run_tag],
@@ -287,14 +287,14 @@ def transform_polling_stations(
             ID, PollingStationAddress, SettlementIndividualElectoralDistrict_ID,
             County_ID, Settlement_ID, NationalIndividualElectoralDistrict_ID
         )
-        SELECT 
+        SELECT
             hash_polling_station_id(
-                county_code, settlement_code, oevk_code, 
+                county_code, settlement_code, oevk_code,
                 COALESCE(tevk_code, '-'), polling_station_address
             ) as ID,
             polling_station_address as PollingStationAddress,
             hash_tevk_id(
-                county_code, settlement_code, COALESCE(tevk_code, '-'), oevk_code
+                county_code, settlement_code, COALESCE(tevk_code, '-')
             ) as SettlementIndividualElectoralDistrict_ID,
             hash_county_id(county_code) as County_ID,
             hash_settlement_id(county_code, settlement_code) as Settlement_ID,
@@ -351,7 +351,7 @@ def transform_addresses(db_connection: duckdb.DuckDBPyConnection, run_tag: str) 
                 SettlementIndividualElectoralDistrict_ID, County_ID, Settlement_ID,
                 NationalIndividualElectoralDistrict_ID
             )
-            SELECT 
+            SELECT
                 hash_address_id(
                     county_code,
                     settlement_code,
@@ -362,11 +362,11 @@ def transform_addresses(db_connection: duckdb.DuckDBPyConnection, run_tag: str) 
                     COALESCE(staircase, ''),
                     CAST(postal_code AS VARCHAR)
                 ) as ID,
-                ROW_NUMBER() OVER (ORDER BY county_code, settlement_code, oevk_code, tevk_code, postal_code, 
+                ROW_NUMBER() OVER (ORDER BY county_code, settlement_code, oevk_code, tevk_code, postal_code,
                                    street_name, street_type, house_number, building, staircase) as Sequence,
-                ? + ROW_NUMBER() OVER (ORDER BY county_code, settlement_code, oevk_code, tevk_code, postal_code, 
+                ? + ROW_NUMBER() OVER (ORDER BY county_code, settlement_code, oevk_code, tevk_code, postal_code,
                                       street_name, street_type, house_number, building, staircase) - 1 as OriginalOrder,
-                TRIM(CONCAT_WS(' ', street_name, street_type, house_number, 
+                TRIM(CONCAT_WS(' ', street_name, street_type, house_number,
                               COALESCE(building, ''), COALESCE(staircase, ''))) as FullAddress,
                 street_name as PublicSpaceName,
                 COALESCE(street_type, '') as PublicSpaceType,
@@ -378,15 +378,15 @@ def transform_addresses(db_connection: duckdb.DuckDBPyConnection, run_tag: str) 
                     county_code, settlement_code, oevk_code, COALESCE(tevk_code, '-'), polling_station_address
                 ) as PollingStation_ID,
                 hash_tevk_id(
-                    county_code, settlement_code, COALESCE(tevk_code, '-'), oevk_code
+                    county_code, settlement_code, COALESCE(tevk_code, '-')
                 ) as SettlementIndividualElectoralDistrict_ID,
                 hash_county_id(county_code) as County_ID,
                 hash_settlement_id(county_code, settlement_code) as Settlement_ID,
                 hash_oevk_id(county_code, oevk_code) as NationalIndividualElectoralDistrict_ID
             FROM (
-                SELECT * FROM staging_korzet 
+                SELECT * FROM staging_korzet
                 WHERE run_tag = ?
-                ORDER BY county_code, settlement_code, oevk_code, tevk_code, postal_code, 
+                ORDER BY county_code, settlement_code, oevk_code, tevk_code, postal_code,
                          street_name, street_type, house_number, building, staircase
                 LIMIT ? OFFSET ?
             ) as chunk
@@ -462,7 +462,7 @@ def transform_postal_code_settlement_relationships(
     db_connection.execute(
         """
         INSERT INTO PostalCode_Settlement (ID, PostalCode_ID, Settlement_ID)
-        SELECT 
+        SELECT
             hash_postal_code_settlement_id(
                 hash_postal_code_id(CAST(postal_code AS VARCHAR)),
                 hash_settlement_id(county_code, settlement_code)
