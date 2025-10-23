@@ -277,28 +277,40 @@ def transform_national_individual_electoral_districts(
     """Transforms staging data into NationalIndividualElectoralDistrict table."""
     logger.info("Transforming NationalIndividualElectoralDistrict data")
 
-    # Extract OEVK data from both sources
+    # Extract OEVK data with polygon data from JSON source
     db_connection.execute(
         """
-        INSERT INTO NationalIndividualElectoralDistrict (ID, OEVK, Name, County_ID)
+        INSERT INTO NationalIndividualElectoralDistrict (ID, OEVK, Name, Center, Polygon, County_ID)
         SELECT
             lower(substring(md5(sk.county_code || '|' || sk.oevk_code), 1, 16)) as ID,
             sk.oevk_code,
             c.CountyName || ' ' || sk.oevk_code as Name,
+            oevk_json.centrum as Center,
+            oevk_json.poligon as Polygon,
             c.ID as County_ID
         FROM staging_korzet sk
         JOIN County c ON sk.county_code = c.CountyCode
+        LEFT JOIN staging_oevk_json oevk_json
+            ON sk.county_code = oevk_json.maz
+            AND sk.oevk_code = oevk_json.evk
+            AND oevk_json.run_tag = ?
         WHERE sk.run_tag = ?
-        GROUP BY sk.county_code, sk.oevk_code, c.ID, c.CountyName
+        GROUP BY sk.county_code, sk.oevk_code, c.ID, c.CountyName, oevk_json.centrum, oevk_json.poligon
         ON CONFLICT (County_ID, OEVK) DO NOTHING
     """,
-        [run_tag],
+        [run_tag, run_tag],
     )
 
     row_count = db_connection.execute(
         "SELECT COUNT(*) FROM NationalIndividualElectoralDistrict"
     ).fetchone()[0]
-    logger.info(f"Transformed {row_count} national individual electoral districts")
+
+    # Log polygon data statistics
+    polygon_count = db_connection.execute(
+        "SELECT COUNT(*) FROM NationalIndividualElectoralDistrict WHERE Polygon IS NOT NULL"
+    ).fetchone()[0]
+
+    logger.info(f"Transformed {row_count} national individual electoral districts ({polygon_count} with polygon data)")
 
 
 def transform_postal_codes(

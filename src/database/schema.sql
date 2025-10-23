@@ -23,6 +23,8 @@ CREATE TABLE IF NOT EXISTS NationalIndividualElectoralDistrict (
     ID TEXT PRIMARY KEY, -- xxhash64(CountyCode|OEVK)
     OEVK TEXT NOT NULL,
     Name TEXT NOT NULL,
+    Center TEXT, -- Center point coordinates (space-separated: "lat lon")
+    Polygon TEXT, -- Boundary polygon coordinates (comma-separated pairs: "lat1 lon1,lat2 lon2,...")
     County_ID TEXT NOT NULL,
     FOREIGN KEY (County_ID) REFERENCES County(ID),
     UNIQUE (County_ID, OEVK)
@@ -33,8 +35,6 @@ CREATE TABLE IF NOT EXISTS SettlementIndividualElectoralDistrict (
     ID TEXT PRIMARY KEY, -- xxhash64(CountyCode|SettlementCode|TEVK|OEVK)
     TEVK TEXT,
     Name TEXT NOT NULL,
-    Center TEXT, -- Coordinate center point (e.g., WKT POINT format) for polling district boundary
-    Polygon TEXT, -- Coordinate polygon (e.g., WKT POLYGON format) for polling district boundary
     County_ID TEXT NOT NULL,
     Settlement_ID TEXT NOT NULL,
     NationalIndividualElectoralDistrict_ID TEXT NOT NULL,
@@ -249,3 +249,13 @@ CREATE INDEX IF NOT EXISTS idx_Address_new_PostalCode_ID ON Address_new(PostalCo
 CREATE INDEX IF NOT EXISTS idx_Address_new_PollingStation_ID ON Address_new(PollingStation_ID);
 CREATE INDEX IF NOT EXISTS idx_Address_new_County_ID ON Address_new(County_ID);
 CREATE INDEX IF NOT EXISTS idx_Address_new_Settlement_ID ON Address_new(Settlement_ID);
+
+-- Staging table for OEVK JSON data
+CREATE TABLE IF NOT EXISTS staging_oevk_json (
+    maz TEXT NOT NULL, -- County code (maps to CountyCode)
+    evk TEXT NOT NULL, -- OEVK code (maps to OEVK)
+    centrum TEXT, -- Center point coordinates
+    poligon TEXT, -- Polygon boundary coordinates
+    run_tag TEXT NOT NULL,
+    PRIMARY KEY (maz, evk, run_tag)
+);

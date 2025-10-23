@@ -699,8 +699,8 @@ erDiagram
         string ID PK "xxhash64(CountyCode|OEVK)"
         string OEVK
         string Name
-        string Center
-        string Polygon
+        string Center "Center point coordinates (space-separated)"
+        string Polygon "Boundary polygon coordinates (comma-separated)"
         string County_ID FK
     }
     SettlementIndividualElectoralDistrict {
