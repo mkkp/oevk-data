@@ -123,11 +123,16 @@ def generate_postgresql_schema():
     """Translates SQLite schema to PostgreSQL-compatible schema.
 
     Converts ID columns from TEXT to UUID type and makes other necessary
-    PostgreSQL-specific adjustments.
+    PostgreSQL-specific adjustments. Adds PostGIS extension and GEOMETRY types
+    for OEVK geospatial data if POSTGRESQL_USE_POSTGIS is enabled.
 
     Returns:
         str: PostgreSQL-compatible schema DDL
     """
+    # Get PostGIS configuration
+    config = get_config()
+    use_postgis = config.get_postgresql_settings().get("use_postgis", True)
+
     schema_path = Path(__file__).parent.parent / "database" / "schema.sql"
     with open(schema_path, "r", encoding="utf-8") as f:
         schema = f.read()
@@ -135,6 +140,17 @@ def generate_postgresql_schema():
     # Convert ID columns from TEXT to UUID
     # Pattern: ID TEXT PRIMARY KEY -> ID UUID PRIMARY KEY
     import re
+
+    # Add PostgreSQL header comment and PostGIS extension if enabled
+    pg_header = "-- PostgreSQL Schema for OEVK Data\n"
+    pg_header += "-- Translated from SQLite schema\n"
+    pg_header += "-- All ID columns use UUID type\n\n"
+
+    if use_postgis:
+        pg_header += "-- PostGIS extension for geospatial data support\n"
+        pg_header += "CREATE EXTENSION IF NOT EXISTS postgis;\n\n"
+
+    schema = pg_header + schema
 
     # Replace all ID columns (primary keys and foreign keys)
     schema = re.sub(r"\bID TEXT PRIMARY KEY\b", "ID UUID PRIMARY KEY", schema)
@@ -144,6 +160,34 @@ def generate_postgresql_schema():
     schema = re.sub(r"\b(\w+_ID) TEXT\b", r"\1 UUID", schema)
     schema = re.sub(r"\b(\w+ID) TEXT NOT NULL\b", r"\1 UUID NOT NULL", schema)
     schema = re.sub(r"\b(\w+ID) TEXT,", r"\1 UUID,", schema)
+
+    # Convert OEVK Center and Polygon to PostGIS GEOMETRY types if enabled
+    if use_postgis:
+        # Replace Center TEXT with GEOMETRY(POINT, 4326)
+        schema = re.sub(
+            r"Center TEXT, -- Center point coordinates \(space-separated: \"lat lon\"\)",
+            "Center GEOMETRY(POINT, 4326), -- Center point coordinates using PostGIS (SRID 4326 = WGS 84)",
+            schema
+        )
+        # Replace Polygon TEXT with GEOMETRY(POLYGON, 4326)
+        schema = re.sub(
+            r"Polygon TEXT, -- Boundary polygon coordinates \(comma-separated pairs: \"lat1 lon1,lat2 lon2,...\"\)",
+            "Polygon GEOMETRY(POLYGON, 4326), -- Boundary polygon coordinates using PostGIS (SRID 4326 = WGS 84)",
+            schema
+        )
+
+        # Add spatial indexes after NationalIndividualElectoralDistrict indexes
+        spatial_indexes = """
+-- Spatial indexes for geospatial queries on OEVK geometries
+CREATE INDEX IF NOT EXISTS idx_oevk_center_gist ON NationalIndividualElectoralDistrict USING GIST (Center);
+CREATE INDEX IF NOT EXISTS idx_oevk_polygon_gist ON NationalIndividualElectoralDistrict USING GIST (Polygon);
+"""
+        # Insert spatial indexes after the NationalIndividualElectoralDistrict_County_ID index
+        schema = re.sub(
+            r"(CREATE INDEX IF NOT EXISTS idx_NationalIndividualElectoralDistrict_County_ID ON NationalIndividualElectoralDistrict\(County_ID\);)",
+            r"\1" + spatial_indexes,
+            schema
+        )
 
     # For PostgreSQL export, we only want the canonical (cleansed) data:
     # - Remove original Address table (dirty data)
