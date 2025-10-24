@@ -1,8 +1,9 @@
-version: '3.8'
+version: "3.8"
 
 services:
   postgres:
     image: postgis/postgis:15-3.3
+    platform: linux/arm64 # Use linux/amd64 for Intel/AMD processors
     container_name: oevk-postgres
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-oevk_data}
@@ -15,7 +16,11 @@ services:
       - ./exports/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
       - ./exports/data.sql:/docker-entrypoint-initdb.d/02_data.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-oevk_user} -d ${POSTGRES_DB:-oevk_data}"]
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-oevk_user} -d ${POSTGRES_DB:-oevk_data}",
+        ]
       interval: 10s
       timeout: 5s
       retries: 5

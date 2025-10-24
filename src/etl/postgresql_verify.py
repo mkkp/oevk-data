@@ -9,6 +9,7 @@ from typing import Optional, Tuple
 
 from src.utils.pipeline_logging import get_logger
 from src.utils.docker_postgresql import DockerPostgreSQLManager
+from src.utils.config import Config
 
 logger = get_logger(__name__)
 
@@ -54,8 +55,12 @@ def verify_and_dump_postgresql(
     logger.info("PostgreSQL Import Verification and Dump Creation")
     logger.info("=" * 80)
 
+    # Get PostGIS configuration
+    config = Config()
+    use_postgis = config.get("postgresql.use_postgis", True)
+
     # Initialize Docker manager
-    manager = DockerPostgreSQLManager(container_name=container_name)
+    manager = DockerPostgreSQLManager(container_name=container_name, use_postgis=use_postgis)
     dump_file_path = None
 
     try:

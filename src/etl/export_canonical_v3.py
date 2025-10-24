@@ -265,7 +265,17 @@ def export_canonical_addresses_optimized(
                 a.County_ID,
                 a.Settlement_ID,
                 a.NationalIndividualElectoralDistrict_ID,
-                ROW_NUMBER() OVER (PARTITION BY am.CanonicalAddressID ORDER BY a.ID) as rn
+                ROW_NUMBER() OVER (
+                    PARTITION BY am.CanonicalAddressID
+                    ORDER BY
+                        -- Prioritize addresses with structured Building/Staircase (not in HouseNumber)
+                        CASE
+                            WHEN a.HouseNumber NOT LIKE '%/%' AND (a.Building IS NOT NULL AND a.Building != '' AND a.Building != '0') THEN 100
+                            WHEN a.HouseNumber NOT LIKE '%/%' AND (a.Staircase IS NOT NULL AND a.Staircase != '' AND a.Staircase != '0') THEN 90
+                            ELSE 50
+                        END DESC,
+                        a.ID
+                ) as rn
             FROM AddressMapping am
             JOIN Address a ON am.OriginalAddressID = a.ID
         ),

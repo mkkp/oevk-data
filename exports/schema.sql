@@ -2,11 +2,15 @@
 -- Translated from SQLite schema
 -- All ID columns use UUID type
 
--- Database Schema for OEVK Data Transformation
--- All primary keys are xxhash64 digests stored as lowercase hexadecimal strings
+-- PostgreSQL Schema for OEVK Data
+-- Translated from SQLite schema
+-- All ID columns use UUID type
 
 -- PostGIS extension for geospatial data support
 CREATE EXTENSION IF NOT EXISTS postgis;
+
+-- Database Schema for OEVK Data Transformation
+-- All primary keys are xxhash64 digests stored as lowercase hexadecimal strings
 
 -- County table
 CREATE TABLE IF NOT EXISTS County (
@@ -114,10 +118,10 @@ CREATE INDEX IF NOT EXISTS idx_County_CountyCode ON County(CountyCode);
 CREATE INDEX IF NOT EXISTS idx_Settlement_County_ID ON Settlement(County_ID);
 CREATE INDEX IF NOT EXISTS idx_Settlement_County_SettlementCode ON Settlement(County_ID, SettlementCode);
 CREATE INDEX IF NOT EXISTS idx_NationalIndividualElectoralDistrict_County_ID ON NationalIndividualElectoralDistrict(County_ID);
-
 -- Spatial indexes for geospatial queries on OEVK geometries
 CREATE INDEX IF NOT EXISTS idx_oevk_center_gist ON NationalIndividualElectoralDistrict USING GIST (Center);
 CREATE INDEX IF NOT EXISTS idx_oevk_polygon_gist ON NationalIndividualElectoralDistrict USING GIST (Polygon);
+
 CREATE INDEX IF NOT EXISTS idx_SettlementIndividualElectoralDistrict_County_ID ON SettlementIndividualElectoralDistrict(County_ID);
 CREATE INDEX IF NOT EXISTS idx_SettlementIndividualElectoralDistrict_Settlement_ID ON SettlementIndividualElectoralDistrict(Settlement_ID);
 CREATE INDEX IF NOT EXISTS idx_PostalCode_Settlement_PostalCode_ID ON PostalCode_Settlement(PostalCode_ID);
@@ -207,6 +211,16 @@ CREATE INDEX IF NOT EXISTS idx_SettlementPublicSpaces_PublicSpaceType_ID ON Sett
 
 
 
+
+-- Staging table for OEVK JSON data
+CREATE TABLE IF NOT EXISTS staging_oevk_json (
+    maz TEXT NOT NULL, -- County code (maps to CountyCode)
+    evk TEXT NOT NULL, -- OEVK code (maps to OEVK)
+    centrum TEXT, -- Center point coordinates
+    poligon TEXT, -- Polygon boundary coordinates
+    run_tag TEXT NOT NULL,
+    PRIMARY KEY (maz, evk, run_tag)
+);
 
 
 -- PostgreSQL-specific extensions for text search

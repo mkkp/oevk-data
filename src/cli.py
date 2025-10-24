@@ -1209,8 +1209,14 @@ def setup_database(args):
 
     config = Config()
     pg_config = config.get("postgresql")
+    use_postgis = pg_config.get("use_postgis", True)
 
     container_name = "oevk"
+
+    # Detect platform for Docker image selection
+    import platform
+    machine = platform.machine().lower()
+    docker_platform = "linux/arm64" if machine in ["arm64", "aarch64"] else "linux/amd64"
 
     # Check if container exists
     try:
@@ -1241,10 +1247,14 @@ def setup_database(args):
         container_exists = False
 
     if not container_exists:
-        logger.info(f"Creating Docker container: {container_name}")
+        # Choose Docker image based on PostGIS configuration
+        postgres_image = "postgis/postgis:15-3.3" if use_postgis else "postgres:16"
+        logger.info(f"Creating Docker container: {container_name} (image: {postgres_image}, platform: {docker_platform})")
         docker_command = [
             "docker",
             "run",
+            "--platform",
+            docker_platform,
             "--name",
             container_name,
             "-e",
@@ -1256,7 +1266,7 @@ def setup_database(args):
             "-d",
             "-p",
             f"{pg_config['port']}:5432",
-            "postgres",
+            postgres_image,
         ]
         subprocess.run(docker_command, check=True)
         logger.info("Waiting for PostgreSQL to be ready...")

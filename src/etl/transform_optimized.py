@@ -396,16 +396,16 @@ def transform_polling_stations(
         SELECT
             hash_polling_station_id(
                 county_code, settlement_code, oevk_code,
-                COALESCE(tevk_code, '-'), polling_station_address
+                COALESCE(tevk_code, '-'), TRIM(polling_station_address)
             ) as ID,
-            polling_station_address as PollingStationAddress,
+            TRIM(polling_station_address) as PollingStationAddress,
             hash_tevk_id(county_code, settlement_code, COALESCE(tevk_code, '-')) as SettlementIndividualElectoralDistrict_ID,
             hash_county_id(county_code) as County_ID,
             hash_settlement_id(county_code, settlement_code) as Settlement_ID,
             hash_oevk_id(county_code, oevk_code) as NationalIndividualElectoralDistrict_ID
         FROM staging_korzet
-        WHERE run_tag = ? AND polling_station_address IS NOT NULL AND polling_station_address != ''
-        GROUP BY county_code, settlement_code, oevk_code, tevk_code, polling_station_address
+        WHERE run_tag = ? AND polling_station_address IS NOT NULL AND TRIM(polling_station_address) != ''
+        GROUP BY county_code, settlement_code, oevk_code, tevk_code, TRIM(polling_station_address)
         ON CONFLICT (ID) DO NOTHING
     """,
         [run_tag],
@@ -495,7 +495,7 @@ def transform_addresses_optimized(
                 trim_leading_zeros(staircase) as Staircase,
                 hash_postal_code_id(CAST(postal_code AS VARCHAR)) as PostalCode_ID,
                 hash_polling_station_id(
-                    county_code, settlement_code, oevk_code, COALESCE(tevk_code, '-'), polling_station_address
+                    county_code, settlement_code, oevk_code, COALESCE(tevk_code, '-'), TRIM(polling_station_address)
                 ) as PollingStation_ID,
                 hash_tevk_id(
                     county_code, settlement_code, COALESCE(tevk_code, '-')
@@ -742,7 +742,7 @@ def process_chunk_parallel(
                 trim_leading_zeros(staircase) as Staircase,
                 hash_postal_code_id(CAST(postal_code AS VARCHAR)) as PostalCode_ID,
                 hash_polling_station_id(
-                    county_code, settlement_code, oevk_code, COALESCE(tevk_code, '-'), polling_station_address
+                    county_code, settlement_code, oevk_code, COALESCE(tevk_code, '-'), TRIM(polling_station_address)
                 ) as PollingStation_ID,
                 hash_tevk_id(
                     county_code, settlement_code, COALESCE(tevk_code, '-')
@@ -900,7 +900,7 @@ def deduplicate_addresses_in_pipeline(
                 postal_code as pir_code,
                 hash_polling_station_id(
                     county_code, COALESCE(settlement_code, ''), oevk_code,
-                    COALESCE(tevk_code, '-'), polling_station_address
+                    COALESCE(tevk_code, '-'), TRIM(polling_station_address)
                 ) as polling_station_id
             FROM staging_korzet
             WHERE run_tag = ?

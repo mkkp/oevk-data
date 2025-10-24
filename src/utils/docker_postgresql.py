@@ -2,6 +2,7 @@
 
 import subprocess
 import time
+import platform as platform_module
 from typing import Optional, Dict
 
 from src.utils.pipeline_logging import get_logger
@@ -19,6 +20,7 @@ class DockerPostgreSQLManager:
         database: str = "oevk",
         user: str = "oevk",
         password: str = "oevk",
+        use_postgis: bool = True,
     ):
         """Initialize Docker PostgreSQL manager.
 
@@ -28,12 +30,14 @@ class DockerPostgreSQLManager:
             database: Database name (default: oevk)
             user: PostgreSQL user (default: oevk)
             password: PostgreSQL password (default: oevk)
+            use_postgis: Use PostGIS image instead of standard PostgreSQL (default: True)
         """
         self.container_name = container_name
         self.port = port
         self.database = database
         self.user = user
         self.password = password
+        self.use_postgis = use_postgis
 
     def create_container(self) -> str:
         """Create and start a PostgreSQL Docker container.
@@ -50,7 +54,14 @@ class DockerPostgreSQLManager:
             logger.info(f"Container '{self.container_name}' already exists, removing...")
             self.stop_and_remove_container()
 
-        logger.info(f"Creating PostgreSQL container '{self.container_name}'...")
+        # Choose Docker image based on PostGIS configuration
+        postgres_image = "postgis/postgis:15-3.3" if self.use_postgis else "postgres:16"
+
+        # Detect platform for Docker image selection
+        machine = platform_module.machine().lower()
+        docker_platform = "linux/arm64" if machine in ["arm64", "aarch64"] else "linux/amd64"
+
+        logger.info(f"Creating PostgreSQL container '{self.container_name}' (image: {postgres_image}, platform: {docker_platform})...")
 
         try:
             # Create and start container
@@ -58,6 +69,8 @@ class DockerPostgreSQLManager:
                 [
                     "docker",
                     "run",
+                    "--platform",
+                    docker_platform,
                     "--name",
                     self.container_name,
                     "-e",
@@ -69,7 +82,7 @@ class DockerPostgreSQLManager:
                     "-p",
                     f"{self.port}:5432",
                     "-d",  # Detached mode
-                    "postgres:16-alpine",
+                    postgres_image,
                 ],
                 capture_output=True,
                 text=True,
