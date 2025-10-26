@@ -57,8 +57,17 @@ class NominatimGeocoder:
         self.max_workers = config.get("nominatim", {}).get("max_workers", 32)  # Number of parallel threads
 
         # Initialize SQLite cache instead of file-based cache
-        cache_db_path = config.get("nominatim", {}).get("cache_db", "data/geocoding_cache.db")
-        self.cache_db_path = Path(cache_db_path)
+        # Use cache_dir from config (supports both cache_db and cache_dir for backwards compatibility)
+        cache_db_path = config.get("nominatim", {}).get("cache_db") or \
+                        config.get("nominatim", {}).get("cache_dir", "data/geocoding_cache")
+        # If cache_db_path is a directory, append the database filename
+        cache_path = Path(cache_db_path)
+        if cache_path.suffix != '.db':
+            # It's a directory, append the database filename
+            self.cache_db_path = cache_path / "geocoding_cache.db"
+        else:
+            # It's already a full path with .db extension
+            self.cache_db_path = cache_path
         self.cache_db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_cache_db()
 
@@ -583,7 +592,15 @@ def geocode_canonical_addresses(db_connection, run_tag: str, ignore_geocoded: bo
 
     # Pre-filter: Load cached results directly from SQLite and only geocode non-cached addresses
     logger.info("Pre-filtering cached addresses from SQLite cache...")
-    cache_db_path = config.get("nominatim", {}).get("cache_db", "data/geocoding_cache.db")
+    # Use cache_dir from config (supports both cache_db and cache_dir for backwards compatibility)
+    cache_db_path = config.get("nominatim", {}).get("cache_db") or \
+                    config.get("nominatim", {}).get("cache_dir", "data/geocoding_cache")
+    # If cache_db_path is a directory, append the database filename
+    cache_path = Path(cache_db_path)
+    if cache_path.suffix != '.db':
+        cache_db_path = str(cache_path / "geocoding_cache.db")
+    else:
+        cache_db_path = str(cache_path)
 
     # Load all cached results directly into DuckDB
     try:

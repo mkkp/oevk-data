@@ -173,7 +173,17 @@ class ReleaseWorkflow:
 
         # Package geocoding cache if it exists
         try:
-            cache_file = "data/geocoding_cache.db"
+            # Get cache path from config (supports both cache_db and cache_dir)
+            from src.utils.config import get_config
+            config = get_config()
+            cache_path_config = config.get("nominatim", {}).get("cache_db") or \
+                               config.get("nominatim", {}).get("cache_dir", "data/geocoding_cache")
+            cache_path = Path(cache_path_config)
+            if cache_path.suffix != '.db':
+                cache_file = str(cache_path / "geocoding_cache.db")
+            else:
+                cache_file = str(cache_path)
+
             if Path(cache_file).exists():
                 geocoding_cache_artifact = self.packager.package_geocoding_cache(
                     cache_file, tag, force=force_rebuild

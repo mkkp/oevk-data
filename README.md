@@ -2323,10 +2323,10 @@ flowchart TD
 - Each settlement belongs to exactly one county
 - Postal codes can span multiple settlements
 - Public spaces are extracted from addresses and linked to settlements
-
-**Note:** TEVK and OEVK are independent electoral systems. TEVK is NOT subordinate to OEVK.
 - Each public space has a name and type (utca, tér, etc.)
 - Settlements can have multiple public spaces, and public spaces can appear in multiple settlements
+
+**Note:** TEVK and OEVK are independent electoral systems. TEVK is NOT subordinate to OEVK.
 
 ## CSV Column Mapping
 
