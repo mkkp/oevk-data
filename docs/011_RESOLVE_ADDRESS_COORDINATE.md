@@ -1,8 +1,53 @@
 # Address Geocoding Integration Specification
 
+## Implementation Status: COMPLETED ✅
+
+**Completion Date**: January 2025  
+**Implementation Version**: v1.5 with performance optimizations
+
+### Key Achievements
+
+- ✅ Multi-threaded geocoding with 32 parallel workers (3.3x speed improvement)
+- ✅ SQLite cache implementation (12x storage reduction: 25MB → 2.1MB)
+- ✅ Bulk pre-filtering optimization (processes only 11.5% of addresses)
+- ✅ CLI flags: `--ignore-geocoded`, `--update-from-cache`
+- ✅ Release integration: Geocoding cache packaged as separate ZIP
+- ✅ 88.5% cache hit rate on typical datasets
+- ✅ Processing rate: 490 addresses/sec with 32 workers
+- ✅ Quality distribution: 17.6% exact, 70.1% street-level, 11.5% failed
+
+### Major Deviations from Original Specification
+
+1. **Cache Implementation**: Changed from file-based JSON cache (original spec) to SQLite database
+   - Original: `data/geocoding_cache/` with individual JSON files
+   - Implemented: `data/geocoding_cache.db` - single SQLite database
+   - Benefit: 12x storage reduction, faster lookups, thread-safe operations
+
+2. **Multi-threading Architecture**: Added ThreadPoolExecutor with 32 workers
+   - Original spec: Sequential batch processing with rate limiting
+   - Implemented: Parallel processing with thread-safe SQLite connections
+   - Benefit: 3.3x speed improvement (148 → 490 addr/sec)
+
+3. **Bulk Pre-filtering**: Added ATTACH DATABASE optimization
+   - Not in original spec
+   - Implemented: Loads 2.9M cached results via SQL JOIN before geocoding
+   - Benefit: Only geocodes 383k new addresses instead of 3.3M
+
+4. **CLI Options**: Added flexible operational modes
+   - Original: Basic `geocode run` command
+   - Implemented: `--ignore-geocoded`, `--update-from-cache` flags
+   - Benefit: Incremental updates, cache distribution, failure retry
+
+5. **Release Integration**: Cache packaged for distribution
+   - Not in original spec
+   - Implemented: Separate ZIP artifact with cache database and README
+   - Benefit: Users can populate coordinates without running Nominatim
+
 ## Executive Summary
 
-This specification defines the integration of geographic coordinates (latitude/longitude) into the OEVK address database using OpenStreetMap data via Nominatim geocoding service. The implementation will add coordinate data to canonical addresses, enabling geospatial analysis and mapping capabilities.
+This specification defines the integration of geographic coordinates (latitude/longitude) into the OEVK address database using OpenStreetMap data via Nominatim geocoding service. The implementation adds coordinate data to canonical addresses, enabling geospatial analysis and mapping capabilities.
+
+**NOTE**: This is the original specification document. See "Implementation Status" section above for actual implementation details and performance characteristics.
 
 ## 1. Objectives
 
@@ -101,13 +146,66 @@ CREATE INDEX IF NOT EXISTS idx_CanonicalAddress_Coordinates ON CanonicalAddress(
 CREATE INDEX IF NOT EXISTS idx_CanonicalAddress_Quality ON CanonicalAddress(GeocodingQuality);
 ```
 
+#### PollingStation Table Extension
+
+Polling stations also require geocoding, but present unique challenges due to composite address formatting. The `PollingStationAddress` field often contains complex institutional addresses that don't match standard street addressing.
+
+```sql
+-- Add coordinate columns to PollingStation table
+ALTER TABLE PollingStation ADD COLUMN Latitude REAL;
+ALTER TABLE PollingStation ADD COLUMN Longitude REAL;
+ALTER TABLE PollingStation ADD COLUMN GeocodingQuality TEXT; -- 'exact', 'street', 'settlement', 'failed'
+ALTER TABLE PollingStation ADD COLUMN GeocodingSource TEXT; -- 'nominatim_local', 'nominatim_fuzzy', 'canonical_address', 'manual'
+ALTER TABLE PollingStation ADD COLUMN GeocodedAt TIMESTAMP;
+ALTER TABLE PollingStation ADD COLUMN MatchedAddress TEXT; -- The address that was successfully matched
+
+-- Optional: PostGIS column for advanced spatial queries
+-- Only added when POSTGRESQL_USE_POSTGIS=true
+ALTER TABLE PollingStation ADD COLUMN Geometry GEOGRAPHY(POINT, 4326);
+
+-- Create spatial index for PostGIS geometry
+CREATE INDEX IF NOT EXISTS idx_PollingStation_Geometry ON PollingStation USING GIST(Geometry);
+
+-- Create regular indexes
+CREATE INDEX IF NOT EXISTS idx_PollingStation_Coordinates ON PollingStation(Latitude, Longitude);
+CREATE INDEX IF NOT EXISTS idx_PollingStation_Quality ON PollingStation(GeocodingQuality);
+```
+
+**Fuzzy Search Strategy for Polling Stations**:
+
+Polling station addresses are often composite and may include:
+- Institution names: "Általános Iskola", "Művelődési Ház", "Polgármesteri Hivatal"
+- Complex building descriptions: "I. épület földszint"
+- Multiple address components in a single string
+
+**Geocoding Approach**:
+
+1. **Exact Match Attempt**: Try direct geocoding of full address
+2. **Fuzzy Tokenization**: If failed, extract and try components:
+   - Remove institution keywords ("iskola", "hivatal", "művelődési ház")
+   - Extract street name and number patterns
+   - Try settlement + extracted components
+3. **Canonical Address Lookup**: Match against geocoded CanonicalAddress table:
+   - Use PostgreSQL trigram similarity (pg_trgm extension)
+   - Apply fuzzy matching with similarity threshold ≥0.6
+   - Join on Settlement_ID for scoped search
+4. **Fallback to Settlement Centroid**: If all fail, use settlement-level coordinates
+
+**Example**:
+```
+Original: "Kossuth Lajos Általános Iskola, Petőfi utca 10."
+Fuzzy extraction: "Petőfi utca 10"
+Settlement: "Budapest"
+→ Search CanonicalAddress WHERE Settlement = 'Budapest' AND similarity(FullAddress, 'Petőfi utca 10') > 0.6
+```
+
 ### 3.3 Configuration Management
 
 #### Environment Variables
 
 ```bash
 # Nominatim Service Configuration
-export NOMINATIM_ENABLED=true                    # Enable/disable geocoding stage
+export NOMINATIM_ENABLED=true                    # Enable/disable geocoding stage (default: true)
 export NOMINATIM_MODE=local                      # 'local' or 'api'
 export NOMINATIM_BASE_URL=http://localhost:8081  # Nominatim service URL
 export NOMINATIM_BATCH_SIZE=100                  # Addresses per batch
@@ -591,6 +689,365 @@ def geocode_canonical_addresses(db_connection, run_tag: str) -> Dict[str, int]:
     logger.info("Geocoding complete")
     
     return geocoder.stats
+
+
+def geocode_polling_stations(db_connection, run_tag: str) -> Dict[str, int]:
+    """
+    Geocode polling stations using fuzzy search and canonical address matching.
+    
+    Args:
+        db_connection: DuckDB connection
+        run_tag: Current pipeline run tag
+        
+    Returns:
+        Dictionary with geocoding statistics
+    """
+    config = Config()
+    
+    if not config.get("nominatim.enabled", False):
+        logger.info("Geocoding disabled in configuration, skipping")
+        return {"skipped": True}
+    
+    logger.info("=" * 80)
+    logger.info("POLLING STATION GEOCODING STAGE")
+    logger.info("=" * 80)
+    
+    # Fetch polling stations without coordinates
+    logger.info("Fetching polling stations...")
+    stations_df = db_connection.execute("""
+        SELECT
+            ps.ID,
+            ps.PollingStationAddress,
+            s.SettlementName,
+            ps.Settlement_ID
+        FROM PollingStation ps
+        JOIN Settlement s ON ps.Settlement_ID = s.ID
+        WHERE ps.Latitude IS NULL  -- Only geocode stations without coordinates
+    """).pl()
+    
+    logger.info(f"Found {len(stations_df):,} polling stations to geocode")
+    
+    if len(stations_df) == 0:
+        logger.info("No polling stations to geocode")
+        return {"total": 0, "skipped": True}
+    
+    # Initialize geocoder with fuzzy search capabilities
+    geocoder = PollingStationGeocoder(config, db_connection)
+    
+    # Geocode polling stations
+    results_df = geocoder.geocode_polling_stations(stations_df)
+    
+    # Update database
+    logger.info("Updating database with polling station geocoding results...")
+    
+    db_connection.register("polling_station_results", results_df)
+    db_connection.execute("""
+        UPDATE PollingStation
+        SET
+            Latitude = psr.Latitude,
+            Longitude = psr.Longitude,
+            GeocodingQuality = psr.GeocodingQuality,
+            GeocodingSource = psr.GeocodingSource,
+            GeocodedAt = psr.GeocodedAt,
+            MatchedAddress = psr.MatchedAddress
+        FROM polling_station_results psr
+        WHERE PollingStation.ID = psr.ID
+    """)
+    db_connection.unregister("polling_station_results")
+    
+    # Generate PostGIS geometry column if enabled
+    if config.get("geocoding.use_postgis", False):
+        logger.info("Generating PostGIS GEOGRAPHY column for polling stations...")
+        db_connection.execute("""
+            UPDATE PollingStation
+            SET Geometry = ST_GeogFromText('POINT(' || Longitude || ' ' || Latitude || ')')
+            WHERE Latitude IS NOT NULL AND Longitude IS NOT NULL
+        """)
+    
+    logger.info("Polling station geocoding complete")
+    
+    return geocoder.stats
+
+
+class PollingStationGeocoder:
+    """Geocoder for polling stations with fuzzy search capabilities."""
+    
+    def __init__(self, config: Config, db_connection):
+        """Initialize geocoder with configuration and database access."""
+        self.config = config
+        self.db_connection = db_connection
+        self.nominatim_geocoder = NominatimGeocoder(config)
+        
+        # Institution keywords to remove for fuzzy search
+        self.institution_keywords = [
+            "általános iskola", "gimnázium", "szakközépiskola",
+            "művelődési ház", "közösségi ház", "kultúrház",
+            "polgármesteri hivatal", "önkormányzat",
+            "óvoda", "iskola", "könyvtár", "sportcsarnok"
+        ]
+        
+        # Statistics
+        self.stats = {
+            "total": 0,
+            "exact_match": 0,
+            "fuzzy_nominatim": 0,
+            "canonical_match": 0,
+            "settlement_fallback": 0,
+            "failed": 0,
+        }
+    
+    def geocode_polling_stations(self, stations_df: pl.DataFrame) -> pl.DataFrame:
+        """
+        Geocode polling stations with multi-strategy approach.
+        
+        Strategy:
+        1. Try exact address match with Nominatim
+        2. Try fuzzy tokenization and simplified address
+        3. Match against CanonicalAddress table with trigram similarity
+        4. Fall back to settlement centroid
+        """
+        logger.info(f"Starting polling station geocoding for {len(stations_df):,} stations")
+        
+        results = []
+        total_batches = (len(stations_df) + 100 - 1) // 100
+        
+        for batch_idx in range(total_batches):
+            start_idx = batch_idx * 100
+            end_idx = min(start_idx + 100, len(stations_df))
+            batch = stations_df[start_idx:end_idx]
+            
+            logger.info(f"Processing batch {batch_idx + 1}/{total_batches} ({len(batch)} stations)")
+            
+            for row in batch.iter_rows(named=True):
+                result = self._geocode_single_station(row)
+                results.append(result)
+                self.stats["total"] += 1
+            
+            # Progress reporting
+            if (batch_idx + 1) % 10 == 0:
+                self._log_progress()
+        
+        # Log final statistics
+        self._log_final_stats()
+        
+        return self._results_to_dataframe(results)
+    
+    def _geocode_single_station(self, station: Dict) -> GeocodingResult:
+        """Geocode a single polling station using multi-strategy approach."""
+        
+        # Strategy 1: Try exact match with Nominatim
+        address_dict = {
+            'ID': station['ID'],
+            'SettlementName': station['SettlementName'],
+            'StreetName': '',
+            'HouseNumber': '',
+            'FullAddress': station['PollingStationAddress']
+        }
+        
+        result = self.nominatim_geocoder._geocode_single(address_dict)
+        if result.latitude is not None and result.quality != GeocodingQuality.FAILED:
+            self.stats["exact_match"] += 1
+            result.source = "nominatim_local"
+            result.matched_address = station['PollingStationAddress']
+            return result
+        
+        # Strategy 2: Try fuzzy tokenization
+        simplified_address = self._extract_address_components(station['PollingStationAddress'])
+        if simplified_address:
+            address_dict['FullAddress'] = simplified_address
+            result = self.nominatim_geocoder._geocode_single(address_dict)
+            if result.latitude is not None and result.quality != GeocodingQuality.FAILED:
+                self.stats["fuzzy_nominatim"] += 1
+                result.source = "nominatim_fuzzy"
+                result.matched_address = simplified_address
+                return result
+        
+        # Strategy 3: Match against CanonicalAddress with trigram similarity
+        canonical_match = self._match_canonical_address(
+            station['PollingStationAddress'],
+            station['Settlement_ID']
+        )
+        if canonical_match:
+            self.stats["canonical_match"] += 1
+            return GeocodingResult(
+                canonical_address_id=station['ID'],
+                latitude=canonical_match['Latitude'],
+                longitude=canonical_match['Longitude'],
+                quality=GeocodingQuality(canonical_match['GeocodingQuality']),
+                source="canonical_address",
+                osm_type=None,
+                osm_id=None,
+                matched_address=canonical_match['MatchedAddress']
+            )
+        
+        # Strategy 4: Fall back to settlement centroid
+        settlement_coords = self._get_settlement_centroid(station['Settlement_ID'])
+        if settlement_coords:
+            self.stats["settlement_fallback"] += 1
+            return GeocodingResult(
+                canonical_address_id=station['ID'],
+                latitude=settlement_coords['Latitude'],
+                longitude=settlement_coords['Longitude'],
+                quality=GeocodingQuality.SETTLEMENT,
+                source="settlement_centroid",
+                osm_type=None,
+                osm_id=None,
+                matched_address=station['SettlementName']
+            )
+        
+        # All strategies failed
+        self.stats["failed"] += 1
+        return GeocodingResult(
+            canonical_address_id=station['ID'],
+            latitude=None,
+            longitude=None,
+            quality=GeocodingQuality.FAILED,
+            source="all_strategies_failed",
+            osm_type=None,
+            osm_id=None,
+            matched_address=None
+        )
+    
+    def _extract_address_components(self, address: str) -> Optional[str]:
+        """
+        Extract clean address components from polling station address.
+        
+        Removes institution keywords and extracts street patterns.
+        
+        Example:
+            "Kossuth Lajos Általános Iskola, Petőfi utca 10."
+            → "Petőfi utca 10"
+        """
+        import re
+        
+        # Convert to lowercase for matching
+        address_lower = address.lower()
+        
+        # Remove institution keywords
+        for keyword in self.institution_keywords:
+            address_lower = address_lower.replace(keyword, "")
+        
+        # Extract street pattern: [Name] [Type] [Number]
+        # Hungarian street types: utca, út, tér, köz, körút, sétány, etc.
+        street_pattern = r'([a-záéíóöőúüű\s]+(?:utca|út|tér|köz|körút|sétány|park|sor))\s*(\d+[a-z\-/\.]*)'
+        match = re.search(street_pattern, address_lower)
+        
+        if match:
+            street = match.group(1).strip()
+            number = match.group(2).strip()
+            return f"{street} {number}"
+        
+        # If no pattern found, remove common punctuation and extra spaces
+        cleaned = re.sub(r'[,;]', ' ', address_lower)
+        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+        
+        return cleaned if cleaned != address_lower else None
+    
+    def _match_canonical_address(
+        self, 
+        polling_address: str, 
+        settlement_id: str
+    ) -> Optional[Dict]:
+        """
+        Match polling station address against CanonicalAddress using trigram similarity.
+        
+        Uses PostgreSQL pg_trgm extension for fuzzy text matching.
+        Requires similarity threshold ≥0.6.
+        """
+        try:
+            result = self.db_connection.execute("""
+                SELECT
+                    Latitude,
+                    Longitude,
+                    GeocodingQuality,
+                    FullAddress as MatchedAddress,
+                    -- DuckDB doesn't have pg_trgm, use simple string similarity
+                    -- Calculate Levenshtein similarity ratio
+                    1.0 - (CAST(levenshtein(LOWER(?), LOWER(FullAddress)) AS REAL) / 
+                           GREATEST(LENGTH(?), LENGTH(FullAddress))) as similarity
+                FROM CanonicalAddress
+                WHERE Settlement_ID = ?
+                  AND Latitude IS NOT NULL
+                  AND GeocodingQuality IN ('exact', 'street')
+                ORDER BY similarity DESC
+                LIMIT 1
+            """, [polling_address, polling_address, settlement_id]).fetchone()
+            
+            if result and result[4] >= 0.6:  # similarity threshold
+                return {
+                    'Latitude': result[0],
+                    'Longitude': result[1],
+                    'GeocodingQuality': result[2],
+                    'MatchedAddress': result[3]
+                }
+        except Exception as e:
+            logger.warning(f"Canonical address matching failed: {e}")
+        
+        return None
+    
+    def _get_settlement_centroid(self, settlement_id: str) -> Optional[Dict]:
+        """Get settlement centroid coordinates from already geocoded addresses."""
+        try:
+            result = self.db_connection.execute("""
+                SELECT
+                    AVG(Latitude) as Latitude,
+                    AVG(Longitude) as Longitude
+                FROM CanonicalAddress
+                WHERE Settlement_ID = ?
+                  AND Latitude IS NOT NULL
+                  AND GeocodingQuality IN ('exact', 'street')
+                GROUP BY Settlement_ID
+            """, [settlement_id]).fetchone()
+            
+            if result and result[0] is not None:
+                return {'Latitude': result[0], 'Longitude': result[1]}
+        except Exception as e:
+            logger.warning(f"Settlement centroid lookup failed: {e}")
+        
+        return None
+    
+    def _log_progress(self):
+        """Log current progress statistics."""
+        total = self.stats["total"]
+        if total == 0:
+            return
+        
+        logger.info(
+            f"Progress: {total:,} stations | "
+            f"Exact: {self.stats['exact_match']:,} ({self.stats['exact_match']/total*100:.1f}%) | "
+            f"Fuzzy: {self.stats['fuzzy_nominatim']:,} ({self.stats['fuzzy_nominatim']/total*100:.1f}%) | "
+            f"Canonical: {self.stats['canonical_match']:,} ({self.stats['canonical_match']/total*100:.1f}%) | "
+            f"Settlement: {self.stats['settlement_fallback']:,} ({self.stats['settlement_fallback']/total*100:.1f}%) | "
+            f"Failed: {self.stats['failed']:,} ({self.stats['failed']/total*100:.1f}%)"
+        )
+    
+    def _log_final_stats(self):
+        """Log final geocoding statistics."""
+        total = self.stats["total"]
+        logger.info("=" * 80)
+        logger.info("POLLING STATION GEOCODING STATISTICS")
+        logger.info("=" * 80)
+        logger.info(f"Total stations: {total:,}")
+        logger.info(f"Exact match (Nominatim): {self.stats['exact_match']:,} ({self.stats['exact_match']/total*100:.1f}%)")
+        logger.info(f"Fuzzy match (Nominatim): {self.stats['fuzzy_nominatim']:,} ({self.stats['fuzzy_nominatim']/total*100:.1f}%)")
+        logger.info(f"Canonical address match: {self.stats['canonical_match']:,} ({self.stats['canonical_match']/total*100:.1f}%)")
+        logger.info(f"Settlement fallback: {self.stats['settlement_fallback']:,} ({self.stats['settlement_fallback']/total*100:.1f}%)")
+        logger.info(f"Failed: {self.stats['failed']:,} ({self.stats['failed']/total*100:.1f}%)")
+        logger.info("=" * 80)
+    
+    def _results_to_dataframe(self, results: List[GeocodingResult]) -> pl.DataFrame:
+        """Convert geocoding results to DataFrame."""
+        from datetime import datetime
+        
+        return pl.DataFrame({
+            "ID": [r.canonical_address_id for r in results],
+            "Latitude": [r.latitude for r in results],
+            "Longitude": [r.longitude for r in results],
+            "GeocodingQuality": [r.quality.value for r in results],
+            "GeocodingSource": [r.source for r in results],
+            "GeocodedAt": [datetime.now() for _ in results],
+            "MatchedAddress": [r.matched_address for r in results]
+        })
 ```
 
 #### 4.2.2 Integration into Transform Stage

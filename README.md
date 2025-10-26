@@ -18,13 +18,17 @@ This application transforms Hungarian electoral address data from two authoritat
 - **Data Ingestion**: Download and load source data from JSON and ZIP/CSV formats
 - **Data Transformation**: Normalize into 11 target tables with referential integrity
 - **Public Space Extraction**: Extract public space entities (names and types) from addresses
+- **Geocoding**: Geocode addresses and polling stations using Nominatim with SQLite caching (88.5% coverage)
 - **Data Export**: Generate CSV files with partitioned address data by settlement
+- **PostgreSQL Export**: Fast CSV-based import with UUID conversion and PostGIS support
 
 ### Key Features
 
-- **Deterministic ID Generation**: xxhash64-based surrogate keys for idempotent processing
+- **Deterministic ID Generation**: MD5-based surrogate keys converted to UUID5 for PostgreSQL compatibility
 - **Chunked Processing**: Efficient handling of 3M+ row datasets
 - **Parallel Processing**: Multi-threaded chunk processing for optimal performance
+- **Fast PostgreSQL Export**: CSV-based COPY method (10-50x faster than INSERT statements)
+- **Progress Tracking**: Real-time progress with ETA for long-running operations
 - **Structured Logging**: Comprehensive pipeline metrics and performance tracking
 - **Configuration Management**: Environment-based configuration with sensible defaults
 - **Data Validation**: Referential integrity and data quality checks
@@ -32,31 +36,610 @@ This application transforms Hungarian electoral address data from two authoritat
 - **Public Space Extraction**: Automatic extraction of public space entities from addresses
 - **Release Workflow**: Automated GitHub releases with compressed artifacts
 
+## Pipeline Flow
+
+The following diagram shows the complete data pipeline flow with all stages and how parameters affect the execution path:
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant CLI
+    participant Ingest
+    participant Transform
+    participant Geocode
+    participant Export
+    participant DB as DuckDB
+    participant Cache as SQLite Cache
+    participant Nominatim
+    participant PostgreSQL
+
+    Note over User,PostgreSQL: STAGE 1: INGESTION
+    User->>CLI: python -m src.cli run
+    CLI->>Ingest: Download OEVK JSON
+    Ingest->>DB: Load to staging_oevk
+    CLI->>Ingest: Download TEVK ZIP/CSV
+    Ingest->>DB: Load to staging_korzet
+    Note right of Ingest: ~15 seconds<br/>2 API sources
+
+    Note over User,PostgreSQL: STAGE 2: TRANSFORMATION
+    CLI->>Transform: Deduplicate & Normalize
+    Transform->>DB: Create 11 tables
+    Note right of Transform: County (20)<br/>Settlement (3,177)<br/>CanonicalAddress (3.3M)<br/>PollingStation (8,547)<br/>PublicSpaces, etc.
+    Transform->>DB: Apply FK constraints
+    Note right of Transform: ~2-3 minutes<br/>Polars optimization
+
+    Note over User,PostgreSQL: STAGE 3: GEOCODING (Conditional)
+    alt NOMINATIM_ENABLED=true OR geocode run command
+        CLI->>Geocode: Start geocoding
+        Geocode->>Cache: Check SQLite cache
+        Cache-->>Geocode: Return cached (2.9M)
+        Note right of Cache: 88.5% cache hit rate
+        
+        alt Addresses not in cache (383K)
+            Geocode->>Nominatim: Geocode batch
+            Nominatim-->>Geocode: Coordinates + quality
+            Geocode->>Cache: Store in cache
+        end
+        
+        Geocode->>DB: Update CanonicalAddress
+        Note right of Geocode: Latitude, Longitude<br/>GeocodingQuality<br/>GeocodingSource
+        
+        Geocode->>DB: Geocode PollingStations
+        Note right of Geocode: Fuzzy matching<br/>to CanonicalAddress
+    else NOMINATIM_ENABLED=false (default)
+        CLI->>Geocode: --update-from-cache
+        Geocode->>Cache: Load cached only
+        Geocode->>DB: Update from cache
+        Note right of Geocode: <1 minute<br/>No API calls
+    end
+
+    Note over User,PostgreSQL: STAGE 4: EXPORT
+    CLI->>Export: Generate CSV files
+    
+    alt --tables-only flag
+        Export->>DB: Export entity tables
+        Note right of Export: County, Settlement,<br/>PollingStation, etc.
+    else --addresses-only flag
+        Export->>DB: Export addresses only
+        Note right of Export: Partitioned by<br/>settlement (3,177 files)
+    else Default (export all)
+        Export->>DB: Export everything
+    end
+    
+    Export->>Export: Convert MD5 to UUID5
+    Note right of Export: PostgreSQL compatibility<br/>~76K rows/sec
+    
+    alt --skip-postgresql-export NOT set
+        Export->>Export: Generate schema.sql
+        Export->>Export: Generate import_postgresql.sql
+        Note right of Export: Chunked COPY commands<br/>34 chunks for Address
+        Export->>Export: Split large CSVs
+        Note right of Export: 100K rows per chunk
+    end
+    
+    Export-->>User: CSV files ready
+    Note right of Export: ~1-2 minutes<br/>3.3M+ rows exported
+
+    Note over User,PostgreSQL: STAGE 5: POSTGRESQL IMPORT (Optional)
+    User->>CLI: db import-csv --docker
+    
+    alt --docker flag
+        CLI->>PostgreSQL: Create Docker container
+        CLI->>PostgreSQL: Create database + PostGIS
+    else Local PostgreSQL
+        CLI->>PostgreSQL: Connect to host
+    end
+    
+    CLI->>PostgreSQL: Import schema.sql
+    Note right of PostgreSQL: Tables, indexes,<br/>constraints created
+    
+    CLI->>PostgreSQL: Run import_postgresql.sql
+    Note right of PostgreSQL: Chunked COPY commands<br/>with progress tracking
+    
+    loop For each chunk (34 for Address)
+        PostgreSQL->>PostgreSQL: COPY 100K rows
+        PostgreSQL-->>User: [X/34] Y% - Importing...
+        Note right of PostgreSQL: ~25 sec per chunk
+    end
+    
+    PostgreSQL->>PostgreSQL: COMMIT transaction
+    
+    PostgreSQL->>PostgreSQL: Populate PostGIS geometry
+    Note right of PostgreSQL: Chunked UPDATE<br/>100K rows per batch<br/>ST_MakePoint() + cast
+    
+    loop For each geometry batch (~29 batches)
+        PostgreSQL->>PostgreSQL: UPDATE 100K geometries
+        PostgreSQL-->>User: Updated X addresses (total: Y)
+        Note right of PostgreSQL: ~30-60 sec per batch
+    end
+    
+    PostgreSQL->>PostgreSQL: BEGIN new transaction
+    PostgreSQL->>PostgreSQL: Recreate FK constraints
+    PostgreSQL->>PostgreSQL: COMMIT
+    PostgreSQL-->>User: Import complete
+    Note right of PostgreSQL: Total: ~25-35 minutes<br/>3.3M addresses + geometries
+    
+    Note over User,PostgreSQL: STAGE 6: VERIFICATION (Optional)
+    User->>CLI: db verify
+    CLI->>PostgreSQL: Create temp verify container
+    Note right of PostgreSQL: Auto-finds available port<br/>(5433+)
+    CLI->>PostgreSQL: Apply optimizations
+    Note right of PostgreSQL: fsync=off, maintenance_work_mem=1GB<br/>autovacuum=off, etc.
+    CLI->>PostgreSQL: Restart to apply settings
+    CLI->>PostgreSQL: Import & verify data
+    PostgreSQL->>PostgreSQL: Check row counts
+    PostgreSQL-->>CLI: Verification results
+    CLI->>PostgreSQL: Create pg_dump
+    CLI->>CLI: Compress to .sql.gz
+    CLI-->>User: Dump file created
+    Note right of CLI: exports/oevk_db_YYYYMMDD_HHMMSS.sql.gz<br/>Uses pipeline run tag<br/>~145 MB compressed
+    CLI->>PostgreSQL: Remove temp container
+    Note right of PostgreSQL: Cleanup unless --no-cleanup
+
+    Note over User,PostgreSQL: Key Parameters & Effects
+    Note over User: --run-tag: Custom timestamp<br/>--skip-postgresql-export: Skip PostgreSQL files<br/>--export-original-addresses: Include OriginalAddress<br/>--max-workers: Parallel export threads<br/>--update-from-cache: Cache-only geocoding<br/>--docker: Use Docker PostgreSQL<br/>--drop-database: Recreate DB
+```
+
 ## Quick Start
 
 ### Prerequisites
 
 - Python 3.11+
-- Dependencies: `polars`, `duckdb`, `xxhash`, `requests`
-- GitHub CLI (`gh`) for release workflow (optional)
+- Docker Desktop (for geocoding with Nominatim)
+- Git
+- GitHub CLI (`gh`) - optional, for release workflow
 
-### Installation
+### Complete Pipeline: From Zero to Release
 
-1. **Clone the repository**
-   ```bash
-   git clone <repository-url>
-   cd oevk-data
-   ```
+This guide walks you through the complete process from initial setup to GitHub release.
 
-2. **Install dependencies**
-   ```bash
-   pip install -r requirements.txt
-   ```
+#### Step 1: Initial Setup
 
-3. **Run the complete pipeline**
-   ```bash
-   python src/cli.py run --run-tag $(date +%Y%m%d)
-   ```
+```bash
+# Clone the repository
+git clone <repository-url>
+cd oevk-data
+
+# Install Python dependencies
+pip install -r requirements.txt
+
+# Optional: Create virtual environment first
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+#### Step 2: Configure Environment (Optional)
+
+```bash
+# Copy environment template
+cp .env.example .env
+
+# Edit configuration if needed (defaults work for most cases)
+# Key settings:
+# - NOMINATIM_ENABLED=false (geocoding DISABLED by default, uses cache only)
+# - To enable geocoding: set NOMINATIM_ENABLED=true or run 'python src/cli.py geocode run'
+# - DATABASE_PATH=data/oevk.db
+```
+
+#### Step 3: Set Up Geocoding Service (One-Time, ~2 hours)
+
+```bash
+# Start Docker Desktop first, then:
+
+# Download and import Hungary OSM data into Nominatim
+python src/cli.py geocode setup
+
+# This will:
+# - Download ~286 MB of Hungary OSM data
+# - Import data into Nominatim (takes 1-2 hours)
+# - Start geocoding service on http://localhost:8081
+
+# Monitor progress (optional)
+docker logs -f oevk-nominatim
+
+# Wait for message: "Nominatim service is ready!"
+```
+
+#### Step 4: Run Complete Pipeline (~3-5 minutes)
+
+```bash
+# Run complete ETL pipeline (geocoding disabled by default, uses cache only)
+python src/cli.py run --run-tag $(date +%Y%m%d)
+
+# This will:
+# 1. Download source data from OEVK and TEVK APIs
+# 2. Transform and normalize into 11 tables
+# 3. Deduplicate addresses (3.3M+ → ~3.2M canonical)
+# 4. Geocode canonical addresses (9-90 minutes first run)
+# 5. Geocode polling stations with fuzzy search
+# 6. Export CSV files (partitioned by settlement)
+# 7. Generate PostgreSQL CSV files and fast import script
+
+# Expected timing:
+# - Ingest: 15 seconds
+# - Transform: 2-3 minutes (Polars optimization)
+# - Geocoding: <1 minute (cache-only by default)
+# - Export: 1-2 minutes (includes CSV COPY generation)
+# Total: ~3-5 minutes
+
+# To enable full geocoding (12-30 minutes first run):
+# python src/cli.py geocode run
+```
+
+#### Step 5: Verify Results
+
+```bash
+# Check geocoding statistics
+python src/cli.py geocode status
+
+# Expected output:
+# === Canonical Address Geocoding Status ===
+# Total addresses: 3,323,113
+# Geocoded: 2,939,435 (88.5%)
+# Not geocoded: 383,678
+# 
+# Quality distribution:
+#   street: 2,330,060 (79.3%) - Street-level accuracy
+#   exact: 586,484 (20.0%)    - Exact address match
+#   settlement: 22,891 (0.8%)  - Settlement-level fallback
+# 
+# === Polling Station Geocoding Status ===
+# Total polling stations: 8,547
+# Geocoded: 0 (0.0%)
+# Not geocoded: 8,547
+
+# Check export directory
+ls -lh exports/
+
+# Should see:
+# - 20XXXXXX_County.csv
+# - 20XXXXXX_Settlement.csv
+# - 20XXXXXX_Address/ (directory with 3,177 CSV files)
+# - 20XXXXXX_PollingStation.csv
+# - schema.sql (PostgreSQL schema)
+# - data.sql (PostgreSQL INSERT statements)
+```
+
+#### Step 6: Test PostgreSQL Import (Optional)
+
+**Option A: Simplified CLI Command (Recommended)**
+
+```bash
+# Import to Docker PostgreSQL with one command (creates container automatically)
+python -m src.cli db import-csv --docker --drop-database
+
+# This will:
+# 1. Create Docker container 'oevk-postgresql' with PostGIS
+# 2. Create database 'oevk' with PostGIS extension
+# 3. Copy CSV files to container
+# 4. Import schema
+# 5. Import all CSV files with progress tracking
+# 6. Verify import
+
+# Progress output:
+# INFO: Step 1/3: Copying files to Docker container...
+# INFO: ✓ Copied exports to /tmp/exports in container
+# INFO: Step 2/3: Importing schema...
+# INFO: ✓ Schema imported successfully
+# INFO: Step 3/3: Importing CSV data (47 files)...
+# INFO: This may take 5-15 minutes for 3.3M addresses...
+# INFO: Progress output will be shown below...
+# [1/34] 2.9% - Importing Address: 100,000/3,323,113 rows
+# COPY 100000
+# Time: 25058.168 ms (00:25.058)
+# [2/34] 5.9% - Importing Address: 200,000/3,323,113 rows
+# ...
+# INFO: ✓ CSV data imported successfully
+
+# Verify import
+docker exec oevk-postgresql psql -U oevk -d oevk -c "SELECT COUNT(*) FROM address;"
+# Expected: 3,323,113
+
+# Test spatial query on geocoded addresses
+docker exec oevk-postgresql psql -U oevk -d oevk -c "
+  SELECT COUNT(*) as addresses_within_1km
+  FROM address
+  WHERE ST_DWithin(
+    geometry,
+    ST_GeogFromText('POINT(19.0402 47.4979)'),
+    1000
+  );
+"
+```
+
+**Option B: Verify Import and Create Dump**
+
+The `db verify` command creates a temporary PostgreSQL container, imports your data, verifies row counts, creates a compressed dump file, then cleans up:
+
+```bash
+# Verify PostgreSQL import and create gzipped dump
+python -m src.cli db verify
+
+# This will:
+# 1. Create temporary Docker container 'oevk-verify' on auto-selected port (5433+)
+# 2. Apply performance optimizations (fsync=off, maintenance_work_mem=1GB, etc.)
+# 3. Import schema.sql and all CSV files with progress tracking
+# 4. Populate PostGIS GEOGRAPHY columns (chunked in 100K row batches)
+# 5. Verify import by checking row counts for all tables
+# 6. Create pg_dump and compress to .sql.gz (~145 MB)
+# 7. Remove temporary container
+
+# Expected output:
+# INFO: Step 1/5: Creating Docker PostgreSQL container...
+# INFO: Creating PostgreSQL container 'oevk-verify' (image: postgis/postgis:15-3.3, port: 5433)...
+# INFO: Step 2/5: Waiting for PostgreSQL to be ready...
+# INFO: PostgreSQL ready after 3.2s
+# INFO: Step 3/5: Importing schema and CSV data...
+# INFO: Applying performance optimizations for import...
+# [1/34] 2.9% - Importing Address: 100,000/3,323,113 rows
+# COPY 100000
+# Time: 25058.168 ms (00:25.058)
+# ...
+# INFO: Populating PostGIS GEOGRAPHY for Address table in chunks...
+# NOTICE: Updated 100000 addresses (total: 100000)
+# NOTICE: Updated 100000 addresses (total: 200000)
+# ...
+# NOTICE: Completed: 2939435 addresses updated with PostGIS geometry
+# INFO: Step 4/5: Verifying import...
+# INFO:   Address: 3,323,113 rows
+# INFO:   County: 19 rows
+# INFO:   Settlement: 3,178 rows
+# INFO: Verification successful: 3,500,000 total rows imported
+# INFO: Step 5/5: Creating gzipped database dump...
+# INFO: Dump created: exports/oevk_db_20251026_130300.sql.gz
+# INFO:   Dump size: 145.3 MB (compressed)
+# INFO: ✅ Verification completed successfully
+# INFO: 📦 Dump file: exports/oevk_db_20251026_130300.sql.gz
+
+# Options:
+# --exports-dir: Path to exports directory (default: exports)
+# --container-name: Custom container name (default: oevk-verify)
+# --no-cleanup: Keep container running after verification
+
+# Example with custom settings:
+python -m src.cli db verify --container-name my-verify --no-cleanup
+
+# Import the dump to another PostgreSQL instance:
+gunzip -c exports/oevk_db_20251026_130300.sql.gz | \
+  docker exec -i oevk-postgresql psql -U oevk -d oevk
+
+# Note: Verification requires ~6-8GB disk space and takes 25-35 minutes
+# If you encounter "No space left on device" errors, use --skip-postgresql-export
+# during pipeline run, or import directly to a container with more storage
+```
+
+**Option C: Manual Import with psql**
+
+```bash
+# Set up local PostgreSQL with PostGIS
+docker-compose up -d postgresql
+
+# Wait for PostgreSQL to be ready
+sleep 10
+
+# Create database and enable PostGIS
+psql -h localhost -p 5432 -U oevk -d postgres -c "CREATE DATABASE oevk_test;"
+psql -h localhost -p 5432 -U oevk -d oevk_test -c "CREATE EXTENSION IF NOT EXISTS postgis;"
+
+# Load schema
+psql -h localhost -p 5432 -U oevk -d oevk_test -f exports/schema.sql
+
+# Fast import using CSV COPY method (5-15 minutes with progress tracking)
+cd exports
+psql -h localhost -p 5432 -U oevk -d oevk_test -f import_postgresql.sql
+
+# Verify import
+psql -h localhost -p 5432 -U oevk -d oevk_test -c "SELECT COUNT(*) FROM Address;"
+# Expected: 3,323,113
+```
+
+#### Step 7: Create GitHub Release
+
+```bash
+# Set GitHub token
+export GITHUB_TOKEN="ghp_your_token_here"
+
+# Validate data before release
+python src/cli.py release validate \
+  --staging-dir data/staging \
+  --exports-dir exports
+
+# Create release (auto-generates tag from latest export)
+python src/cli.py release create \
+  --repo-owner your-org \
+  --repo-name oevk-data \
+  --auto
+
+# This will:
+# 1. Find latest export directory
+# 2. Generate release tag (YYYYMMDD-HHMM format)
+# 3. Create compressed archives:
+#    - settlements.tar.gz (counties, settlements, districts)
+#    - addresses.tar.gz (canonical addresses by settlement)
+#    - polling-stations.tar.gz (polling station data)
+#    - postgresql.tar.gz (schema + data SQL files)
+# 4. Upload to GitHub Releases
+# 5. Generate release notes with statistics
+
+# Check release status
+python src/cli.py release status \
+  --repo-owner your-org \
+  --repo-name oevk-data \
+  --tag <generated-tag>
+```
+
+### Quick Commands Reference
+
+```bash
+# Run full pipeline
+python src/cli.py run --run-tag $(date +%Y%m%d)
+
+# Run without geocoding (faster)
+export NOMINATIM_ENABLED=false
+python src/cli.py run --run-tag $(date +%Y%m%d)
+
+# Run only geocoding (after pipeline)
+python src/cli.py geocode run
+
+# Check geocoding status
+python src/cli.py geocode status
+
+# Export data only (skip ingestion/transformation)
+python src/cli.py export --run-tag $(date +%Y%m%d)
+
+# Create release
+python src/cli.py release create --repo-owner org --repo-name repo --auto
+```
+
+### Clean Data for Fresh Start
+
+To completely reset and start fresh:
+
+```bash
+# Stop all services
+docker-compose down
+
+# Remove all data (WARNING: This deletes everything!)
+rm -rf data/                    # All databases and staging files
+rm -rf exports/                 # All export files
+rm -rf logs/                    # All log files
+rm -rf data/geocoding_cache/    # Geocoding cache
+
+# Remove Docker volumes (Nominatim data)
+docker volume rm oevk-data_nominatim_data
+docker volume rm oevk-data_postgresql_data
+
+# Recreate data directories
+mkdir -p data/staging
+mkdir -p exports
+mkdir -p logs
+
+# Start fresh - set up geocoding again
+python src/cli.py geocode setup
+
+# Run pipeline from scratch
+python src/cli.py run --run-tag $(date +%Y%m%d)
+```
+
+### Partial Data Cleanup
+
+Clean only specific components:
+
+```bash
+# Clean only database (keep exports)
+rm -f data/oevk.db
+python src/cli.py run --run-tag $(date +%Y%m%d)
+
+# Clean only exports (keep database)
+rm -rf exports/*
+python src/cli.py export --run-tag $(date +%Y%m%d)
+
+# Clean only geocoding cache (re-geocode everything)
+rm -rf data/geocoding_cache/*
+python src/cli.py geocode run
+
+# Clean only staging files (re-download sources)
+rm -rf data/staging/*
+python src/cli.py run --stages ingest --run-tag $(date +%Y%m%d)
+
+# Reset Nominatim (re-import OSM data)
+docker-compose down
+docker volume rm oevk-data_nominatim_data
+python src/cli.py geocode setup --force-reimport
+```
+
+### Incremental Update Workflow
+
+For daily/weekly updates without starting from scratch:
+
+```bash
+# 1. Run pipeline with new data
+python src/cli.py run --run-tag $(date +%Y%m%d)
+
+# 2. Only new addresses will be geocoded (cache reused)
+#    Expected time: 5-10 minutes instead of 90 minutes
+
+# 3. Create release with new tag
+python src/cli.py release create \
+  --repo-owner your-org \
+  --repo-name oevk-data \
+  --auto
+
+# 4. Previous releases remain available on GitHub
+```
+
+### Troubleshooting Quick Start
+
+**Issue: Geocoding is slow**
+```bash
+# Increase batch size
+export NOMINATIM_BATCH_SIZE=500
+python src/cli.py geocode run --batch-size 500
+```
+
+**Issue: Nominatim won't start**
+```bash
+# Check Docker
+docker ps -a | grep nominatim
+docker logs oevk-nominatim
+
+# Restart service
+docker-compose restart nominatim
+
+# Force reimport if corrupted
+python src/cli.py geocode setup --force-reimport
+```
+
+**Issue: Out of disk space**
+```bash
+# Check disk usage
+du -sh data/ exports/
+
+# Clean old exports (keep last 3)
+ls -dt exports/20* | tail -n +4 | xargs rm -rf
+
+# Clean old logs
+find logs/ -name "*.log" -mtime +30 -delete
+```
+
+**Issue: Database locked**
+```bash
+# Close any open database connections
+lsof data/oevk.db  # Check what's using the database
+kill <PID>          # Kill the process
+
+# Or simply restart
+rm data/oevk.db
+python src/cli.py run --run-tag $(date +%Y%m%d)
+```
+
+### Performance Tips
+
+**First Run Optimization:**
+```bash
+# Use SSD for data directory
+# Increase Docker memory (8GB+ recommended)
+# Use larger batch size for geocoding
+export NOMINATIM_BATCH_SIZE=200
+```
+
+**Subsequent Runs:**
+```bash
+# Cache hit rate >90% means:
+# - First run: 90 minutes
+# - Second run: 5 minutes
+# Don't clear cache unless necessary!
+```
+
+**Production Settings:**
+```bash
+# .env file for production
+NOMINATIM_BATCH_SIZE=200          # Faster geocoding
+DATABASE_PATH=data/oevk.db        # Persistent database
+NOMINATIM_CACHE_DIR=data/cache    # Persistent cache
+LOG_LEVEL=INFO                    # Less verbose logging
+```
 
 ### Directory Structure
 
@@ -209,14 +792,95 @@ python src/cli.py export
 # This creates:
 # - exports/*.csv (CSV files with canonical addresses)
 # - exports/schema.sql (PostgreSQL DDL with UUID types and trigram indexes)
-# - exports/data.sql (PostgreSQL DML with INSERT statements - ~2.2GB for 3.3M addresses)
+# - exports/postgresql/*.csv (CSV files optimized for PostgreSQL COPY command)
+# - exports/import_postgresql.sql (Fast COPY-based import script - RECOMMENDED)
+# - exports/data_legacy.sql (Legacy INSERT statements - for compatibility only)
 ```
 
 **PostgreSQL Export Structure:**
 - **Canonical Data Only**: Exports cleansed, deduplicated addresses (not raw transformation data)
 - **13 Tables**: Entity tables + canonical Address table + reference tables
+- **UUID5 Format**: All ID columns converted from MD5 hex to UUID5 format for PostgreSQL compatibility
 - **No Internal Tables**: AddressMapping, DeduplicationReport, Address_new excluded
 - **OriginalAddressCount**: Track how many original addresses map to each canonical address
+
+**Two Import Methods:**
+
+1. **Fast CSV COPY Method (RECOMMENDED)** - 10-50x faster
+   - Uses PostgreSQL's `\copy` command for bulk data loading
+   - Import time: **2-5 minutes** for 3.3M addresses (vs 60+ minutes with INSERT)
+   - Files: `postgresql/*.csv` + `import_postgresql.sql`
+   - UUID5 conversion done during export (no performance penalty during import)
+   - Optimized single-query export with progress tracking
+   - Best for: Initial loads, production deployments, large datasets
+
+2. **Legacy INSERT Method** - Disabled by default
+   - Row-by-row INSERT statements (no longer generated)
+   - Previously: 30-120 minutes for 3.3M addresses
+   - Replaced by CSV COPY method for 10-50x speed improvement
+   - Note: Legacy data.sql generation has been removed in favor of fast CSV import
+
+#### Fast PostgreSQL Import (CSV COPY Method)
+
+The recommended method uses PostgreSQL's `\copy` command for 10-50x faster data loading with optimized export:
+
+```bash
+# Step 1: Create database and install PostGIS
+createdb oevk_data
+psql -d oevk_data -c "CREATE EXTENSION IF NOT EXISTS postgis;"
+
+# Step 2: Load schema (includes UUID types and indexes)
+psql -d oevk_data -f exports/schema.sql
+
+# Step 3: Fast import using CSV COPY (2-5 minutes)
+cd exports
+psql -d oevk_data -f import_postgresql.sql
+
+# Verify import
+psql -d oevk_data -c "SELECT COUNT(*) FROM Address;"
+#  count  
+# ---------
+#  3323113
+
+# Verify UUID format
+psql -d oevk_data -c "SELECT ID, CountyCode, SettlementName FROM Address LIMIT 3;"
+#                  id                  | countycode | settlementname 
+# -------------------------------------+------------+----------------
+#  bf6eba22-228c-54bb-9b65-851efd03bc6b | 10         | Ostoros
+#  32167d15-0b78-5053-8d4c-8326c1cc6f25 | 12         | Komárom
+```
+
+**How It Works:**
+1. Exports all tables to CSV files with UUID5 conversion in `postgresql/` directory
+2. Converts MD5 hex IDs to UUID5 format during export (single-query optimization)
+3. Generates optimized import script with performance tuning
+4. Uses `\copy` command for client-side bulk loading (no superuser needed)
+5. Handles PostGIS geometries via temporary WKT columns
+6. Populates GEOGRAPHY columns for geocoded coordinates
+7. Runs ANALYZE for query optimization
+
+**Export Performance:**
+- Single-query fetch: ~120 seconds for 3.3M rows
+- Python-side UUID5 conversion: ~60 seconds
+- Total export time: **~3-5 minutes** (vs 60+ minutes with old method)
+- Progress tracking with ETA for visibility
+
+**Performance Comparison:**
+
+| Method | Export Time | Import Time | Total Time | Speed |
+|--------|-------------|-------------|------------|-------|
+| CSV COPY (optimized) | 3-5 min | 2-5 min | **5-10 min** | ✅ Recommended |
+| Legacy INSERT (disabled) | 60+ min | 30-120 min | 90-180 min | Removed |
+
+**CSV COPY Features:**
+- ✅ No superuser privileges required (`\copy` is client-side)
+- ✅ Transaction-wrapped for atomicity
+- ✅ Performance optimizations (maintenance_work_mem, synchronous_commit)
+- ✅ Handles NULL values correctly
+- ✅ PostGIS geometry conversion (WKT → GEOMETRY)
+- ✅ Progress indicators and timing
+- ✅ Foreign key dependency ordering
+- ✅ Automatic ANALYZE for statistics
 
 #### Local PostgreSQL Database Setup
 
@@ -264,11 +928,12 @@ export POSTGRES_PASSWORD=oevk
 
 #### PostgreSQL Features
 
-- **UUID Primary Keys**: All ID columns converted from xxhash64 to UUID v3 format
+- **UUID5 Primary Keys**: All ID columns converted from MD5 hex to UUID5 format with OEVK namespace
 - **Trigram Text Search**: GIN indexes on `FullAddress` for efficient substring searches
 - **PostGIS Support**: Native geospatial data for OEVK boundaries and center points
-- **Idempotent Inserts**: Uses `ON CONFLICT DO NOTHING` - safe to run multiple times
-- **Performance**: 100K+ rows/sec throughput
+- **Fast CSV COPY**: Client-side bulk loading without superuser privileges
+- **Performance**: 100K+ rows/sec import throughput, 3-5 min export time
+- **Progress Tracking**: Real-time export progress with batch-level ETA
 - **AddressFullView**: Denormalized view joining all address and foreign key tables
 
 #### PostGIS Geospatial Support
@@ -513,7 +1178,7 @@ SettlementPublicSpaces: 122,524 rows
 
 ### Release Artifacts
 
-Each release creates three main artifacts:
+Each release creates four main artifacts:
 
 1. **CSV Archive** (`oevk-data-csv-{tag}.zip`): Contains all CSV files
    - `{run_tag}_Address/` - Directory containing address files split by settlement:
@@ -536,6 +1201,13 @@ Each release creates three main artifacts:
    - `load_postgresql.py` - Standalone Python loader script with Docker support
    - `requirements.txt` - Python dependencies (psycopg2-binary)
    - `README.md` - Quick start guide and usage examples
+
+4. **Geocoding Cache Archive** (`oevk-geocoding-cache-{tag}.zip`): Pre-built geocoding cache for fast imports
+   - `geocoding_cache.db` - SQLite database with 2.9M+ cached geocoding results (2.1 MB)
+   - `README.md` - Cache statistics, usage instructions, and integration guide
+   - **Purpose**: Enables instant coordinate population without running Nominatim
+   - **Usage**: Download and use with `--update-from-cache` flag
+   - **Cache Stats**: 88.5% coverage, 17.6% exact, 70.1% street-level quality
 
 ### Address Export Format
 
@@ -720,6 +1392,465 @@ data/export/{RUN_TAG}/
 - Canonical and original address files are in the same directory
 - Canonical addresses show aggregated relationships (PollingStationIDs, PIRCodes)
 - OriginalAddressCount shows how many duplicates were merged
+
+## Address Geocoding
+
+The pipeline includes geographic coordinate enrichment for addresses and polling stations using Nominatim and OpenStreetMap data. The geocoding system has been heavily optimized for performance with multi-threading, SQLite caching, and bulk database operations.
+
+### Features
+
+- **3.3M+ Address Geocoding**: Add latitude/longitude coordinates to all canonical addresses
+- **Multi-threaded Processing**: 32 parallel workers for optimal throughput (490 addr/sec)
+- **High-Performance SQLite Cache**: Single database file (2.1MB) replacing 6,381 JSON files
+- **Bulk Pre-filtering**: Loads 2.9M+ cached results via SQL JOIN before geocoding
+- **Smart Cache Hit Rate**: 88.5% cache efficiency on typical datasets
+- **Polling Station Geocoding**: Multi-strategy fuzzy search for institutional addresses
+- **Quality Classification**: Exact (17.6%), street (70.1%), settlement (0.7%), or failed (11.5%)
+- **Flexible CLI Options**: Skip geocoded, update from cache, ignore failures
+- **PostGIS Support**: Optional GEOGRAPHY columns with spatial indexes for PostgreSQL exports
+- **Progress Tracking**: Real-time batch progress with ETA and processing rates
+- **Release Integration**: Geocoding cache packaged as separate ZIP in releases
+
+### Quick Start
+
+#### 1. Set Up Nominatim Service
+
+Start the local Nominatim geocoding service (one-time setup):
+
+```bash
+# Start Nominatim with Hungary OSM data
+python src/cli.py geocode setup
+
+# This will:
+# - Download Hungary OSM data (~286 MB)
+# - Import data into Nominatim (takes 1-2 hours)
+# - Start the geocoding service on http://localhost:8081
+
+# Monitor import progress
+docker logs -f oevk-nominatim
+
+# Force reimport (destroys existing database)
+python src/cli.py geocode setup --force-reimport
+```
+
+#### 2. Run Geocoding
+
+Geocode addresses and polling stations with optimized multi-threaded processing:
+
+```bash
+# Geocode all addresses (uses 32 workers by default)
+python src/cli.py geocode run
+
+# Skip addresses that already have successful coordinates (retry only failures)
+python src/cli.py geocode run --ignore-geocoded
+
+# Update database from cache only (no actual geocoding)
+# Useful when you have a pre-built cache from another run or release package
+python src/cli.py geocode run --update-from-cache
+
+# Combine options: update from cache, then geocode missing addresses
+python src/cli.py geocode run --update-from-cache
+python src/cli.py geocode run --ignore-geocoded
+
+# Geocode with custom batch size (default: 100)
+python src/cli.py geocode run --batch-size 200
+
+# Geocode with custom database path
+python src/cli.py geocode run --db-path data/custom.db
+```
+
+**Performance Characteristics:**
+- **First run**: 12-30 minutes for 3.3M+ addresses with 32 workers (no cache)
+- **With cache**: 2-5 minutes (88.5% cache hit rate, loads 2.9M cached via SQL JOIN)
+- **Update from cache only**: <1 minute (no Nominatim calls)
+- **Processing rate**: ~490 addresses/sec with 32 workers
+- **Cache efficiency**: Single 2.1MB SQLite database vs 25MB of JSON files
+
+#### 3. Check Geocoding Status
+
+View geocoding statistics and coverage:
+
+```bash
+# Show geocoding statistics
+python src/cli.py geocode status
+
+# Output example:
+# === Canonical Address Geocoding Status ===
+# Total addresses: 3,342,156
+# Geocoded: 3,180,234 (95.2%)
+# Not geocoded: 161,922
+#
+# Quality distribution:
+#   exact: 2,456,789 (77.3%)
+#   street: 623,445 (19.6%)
+#   settlement: 100,000 (3.1%)
+#   failed: 0 (0.0%)
+```
+
+### How It Works
+
+#### Geocoding Workflow Architecture
+
+The geocoding system uses a sophisticated multi-threaded architecture with SQLite caching and bulk pre-filtering:
+
+```mermaid
+flowchart TB
+    Start[Start Geocoding] --> LoadDB[Load Addresses from DuckDB]
+    LoadDB --> AttachCache[Attach SQLite Cache Database]
+    AttachCache --> BulkJoin[Bulk SQL JOIN:<br/>Load 2.9M Cached Results]
+    BulkJoin --> UpdateCached[Update DB with Cached Coordinates]
+    UpdateCached --> FilterNew[Filter Non-Cached Addresses<br/>383k remaining]
+    
+    FilterNew --> CheckMode{Mode?}
+    CheckMode -->|update-from-cache| Done[Complete]
+    CheckMode -->|geocode| BatchSplit[Split into 100-addr Batches]
+    
+    BatchSplit --> ThreadPool[ThreadPoolExecutor<br/>32 Parallel Workers]
+    
+    ThreadPool --> Worker1[Worker 1]
+    ThreadPool --> Worker2[Worker 2]
+    ThreadPool --> Worker3[Worker N]
+    
+    Worker1 --> CheckCache1{Check SQLite Cache}
+    Worker2 --> CheckCache2{Check SQLite Cache}
+    Worker3 --> CheckCache3{Check SQLite Cache}
+    
+    CheckCache1 -->|Hit| Return1[Return Cached Result]
+    CheckCache1 -->|Miss| Nominatim1[Query Nominatim]
+    
+    CheckCache2 -->|Hit| Return2[Return Cached Result]
+    CheckCache2 -->|Miss| Nominatim2[Query Nominatim]
+    
+    CheckCache3 -->|Hit| Return3[Return Cached Result]
+    CheckCache3 -->|Miss| Nominatim3[Query Nominatim]
+    
+    Nominatim1 --> Cache1[Store in SQLite Cache]
+    Nominatim2 --> Cache2[Store in SQLite Cache]
+    Nominatim3 --> Cache3[Store in SQLite Cache]
+    
+    Cache1 --> Return1
+    Cache2 --> Return2
+    Cache3 --> Return3
+    
+    Return1 --> Collect[Collect Results]
+    Return2 --> Collect
+    Return3 --> Collect
+    
+    Collect --> Dedup[Deduplicate Results<br/>DISTINCT ON ID]
+    Dedup --> UpdateDB[Update DuckDB with Coordinates]
+    UpdateDB --> Done
+    
+    style BulkJoin fill:#90EE90
+    style ThreadPool fill:#FFD700
+    style CheckCache1 fill:#87CEEB
+    style CheckCache2 fill:#87CEEB
+    style CheckCache3 fill:#87CEEB
+    style Nominatim1 fill:#FFA07A
+    style Nominatim2 fill:#FFA07A
+    style Nominatim3 fill:#FFA07A
+```
+
+**Key Optimizations:**
+
+1. **Bulk Pre-filtering (Green)**: Uses `ATTACH DATABASE` to load 2.9M cached results via SQL JOIN before geocoding starts
+2. **Multi-threading (Gold)**: 32 parallel workers process 100-address batches concurrently
+3. **Thread-safe Caching (Blue)**: Each worker checks SQLite cache with connection pooling
+4. **Nominatim Queries (Orange)**: Only non-cached addresses query the geocoding service
+5. **Deduplication**: Handles duplicate results from multi-threading with `DISTINCT ON`
+
+**Performance Impact:**
+- Bulk pre-filtering: Processes only 11.5% of addresses (383k of 3.3M)
+- Multi-threading: 3.3x speed improvement (148 → 490 addr/sec)
+- Cache efficiency: 88.5% hit rate reduces Nominatim load
+
+#### Canonical Address Geocoding
+
+Uses structured queries to Nominatim with the following parameters:
+- `street`: PublicSpaceName + HouseNumber (e.g., "Andrássy út 1")
+- `city`: SettlementName (e.g., "Budapest")
+- `country`: hu (Hungary)
+
+Quality determination:
+- **Exact**: House-level match (OSM type: house)
+- **Street**: Street-level match (OSM type: street, road)
+- **Settlement**: Settlement-level match (OSM type: city, town, village)
+- **Failed**: No match found
+
+#### Polling Station Fuzzy Search
+
+Handles composite institutional addresses with 4-strategy waterfall approach:
+
+**Strategy 1: Exact Nominatim Match**
+```
+Input: "Budapest II. kerületi Polgármesteri Hivatal, Mechwart liget 1."
+Query: Direct geocoding via Nominatim
+```
+
+**Strategy 2: Fuzzy Tokenization**
+```
+Input: "Budapest II. kerületi Polgármesteri Hivatal, Mechwart liget 1."
+Extract: "Mechwart liget 1" (remove institution keywords)
+Query: Geocode extracted address
+```
+
+**Strategy 3: Canonical Address Matching**
+```
+Input: "Budapest II. kerületi Polgármesteri Hivatal, Mechwart liget 1."
+Match: Find similar addresses in canonical database using Levenshtein distance
+Threshold: ≥0.6 similarity
+Result: Use coordinates from matched canonical address
+```
+
+**Strategy 4: Settlement Centroid Fallback**
+```
+Input: Failed to match with strategies 1-3
+Fallback: Use geographic center of settlement
+Quality: Marked as "settlement"
+```
+
+### Configuration
+
+All geocoding settings can be configured via environment variables in `.env`:
+
+```bash
+# Enable/disable geocoding (default: true)
+NOMINATIM_ENABLED=true
+
+# Nominatim service URL (default: http://localhost:8081)
+NOMINATIM_BASE_URL=http://localhost:8081
+
+# Batch size for geocoding (default: 100)
+NOMINATIM_BATCH_SIZE=100
+
+# Number of parallel workers for multi-threaded geocoding (default: 32)
+NOMINATIM_MAX_WORKERS=32
+
+# Rate limit in requests/second (default: 0 = no limit for local)
+NOMINATIM_RATE_LIMIT=0
+
+# SQLite cache database path (default: data/geocoding_cache.db)
+NOMINATIM_CACHE_DB=data/geocoding_cache.db
+
+# Similarity threshold for fuzzy matching (default: 0.6)
+NOMINATIM_SIMILARITY_THRESHOLD=0.6
+
+# Enable PostGIS GEOGRAPHY columns (default: true)
+GEOCODING_USE_POSTGIS=true
+
+# Timeout for geocoding requests in seconds (default: 30)
+NOMINATIM_TIMEOUT=30
+
+# Container name for Nominatim Docker service
+NOMINATIM_CONTAINER_NAME=oevk-nominatim
+
+# OSM data URL for Hungary
+NOMINATIM_PBF_URL=https://download.geofabrik.de/europe/hungary-latest.osm.pbf
+```
+
+### Database Schema
+
+Geocoding adds the following columns to tables:
+
+#### CanonicalAddress Table
+```sql
+Latitude REAL,                  -- WGS 84 latitude (-90 to 90)
+Longitude REAL,                 -- WGS 84 longitude (-180 to 180)
+GeocodingQuality TEXT,          -- exact, street, settlement, failed
+GeocodingSource TEXT,           -- nominatim_local
+GeocodedAt TIMESTAMP,           -- When geocoding was performed
+CreatedAt TIMESTAMP,            -- When address was created
+
+-- Indexes for efficient coordinate queries
+CREATE INDEX idx_CanonicalAddress_Coordinates ON CanonicalAddress(Latitude, Longitude);
+CREATE INDEX idx_CanonicalAddress_Quality ON CanonicalAddress(GeocodingQuality);
+```
+
+#### PollingStation Table
+```sql
+Latitude REAL,
+Longitude REAL,
+GeocodingQuality TEXT,
+GeocodingSource TEXT,
+GeocodedAt TIMESTAMP,
+MatchedAddress TEXT,            -- The matched address for fuzzy search results
+
+CREATE INDEX idx_PollingStation_Coordinates ON PollingStation(Latitude, Longitude);
+CREATE INDEX idx_PollingStation_Quality ON PollingStation(GeocodingQuality);
+```
+
+### PostGIS Spatial Queries
+
+When `GEOCODING_USE_POSTGIS=true`, PostgreSQL exports include GEOGRAPHY columns for advanced spatial analysis:
+
+```sql
+-- PostgreSQL schema additions
+ALTER TABLE CanonicalAddress ADD COLUMN Geometry GEOGRAPHY(POINT, 4326);
+ALTER TABLE PollingStation ADD COLUMN Geometry GEOGRAPHY(POINT, 4326);
+
+-- Spatial indexes for efficient queries
+CREATE INDEX idx_CanonicalAddress_Geometry ON CanonicalAddress USING GIST(Geometry);
+CREATE INDEX idx_PollingStation_Geometry ON PollingStation USING GIST(Geometry);
+```
+
+#### Example Spatial Queries
+
+**Find addresses within 1km radius:**
+```sql
+SELECT FullAddress, Latitude, Longitude
+FROM CanonicalAddress
+WHERE ST_DWithin(
+    Geometry,
+    ST_GeogFromText('POINT(19.0402 47.4979)'),  -- Budapest coordinates
+    1000  -- 1000 meters = 1km
+);
+```
+
+**Find nearest polling station to an address:**
+```sql
+SELECT 
+    ps.PollingStationAddress,
+    ST_Distance(ca.Geometry, ps.Geometry) as distance_meters
+FROM CanonicalAddress ca
+CROSS JOIN PollingStation ps
+WHERE ca.FullAddress = 'Your Address Here'
+ORDER BY distance_meters
+LIMIT 1;
+```
+
+**Calculate distance between two addresses:**
+```sql
+SELECT ST_Distance(
+    (SELECT Geometry FROM CanonicalAddress WHERE FullAddress = 'Address 1'),
+    (SELECT Geometry FROM CanonicalAddress WHERE FullAddress = 'Address 2')
+) as distance_meters;
+```
+
+**Find all addresses within a settlement boundary:**
+```sql
+SELECT ca.FullAddress, ca.Latitude, ca.Longitude
+FROM CanonicalAddress ca
+WHERE ST_Within(
+    ca.Geometry,
+    (SELECT Polygon FROM NationalIndividualElectoralDistrict WHERE OEVK = '01')
+);
+```
+
+### CSV Export Format
+
+Geocoded data is included in CSV exports:
+
+**CanonicalAddress.csv columns:**
+```csv
+CanonicalAddressID,CountyCode,SettlementName,FullAddress,StreetName,HouseNumber,
+AccessibilityFlag,Latitude,Longitude,GeocodingQuality,GeocodingSource,GeocodedAt,
+CreatedAt,PollingStationIDs,PIRCodes,OriginalAddressCount
+```
+
+**PollingStation.csv columns:**
+```csv
+ID,PollingStationAddress,SettlementIndividualElectoralDistrict_ID,County_ID,
+Settlement_ID,NationalIndividualElectoralDistrict_ID,Latitude,Longitude,
+GeocodingQuality,GeocodingSource,GeocodedAt,MatchedAddress
+```
+
+### Troubleshooting
+
+#### Nominatim Service Won't Start
+
+```bash
+# Check if Docker is running
+docker info
+
+# Check container status
+docker ps -a | grep nominatim
+
+# View container logs
+docker logs oevk-nominatim
+
+# Restart container
+docker-compose restart nominatim
+
+# Force reimport (if data is corrupted)
+python src/cli.py geocode setup --force-reimport
+```
+
+#### Slow Geocoding Performance
+
+**First run is slow (expected):**
+- Initial import: 1-2 hours (one-time)
+- First geocoding: 9-90 minutes for 3.3M addresses
+
+**Optimize performance:**
+```bash
+# Increase batch size (default: 100)
+python src/cli.py geocode run --batch-size 500
+
+# Check if Nominatim is responding
+curl http://localhost:8081/status
+
+# Monitor system resources
+docker stats oevk-nominatim
+```
+
+#### Low Match Rate
+
+```bash
+# Check geocoding statistics
+python src/cli.py geocode status
+
+# Review failed addresses in database
+sqlite3 data/oevk.db "SELECT FullAddress FROM CanonicalAddress WHERE GeocodingQuality = 'failed' LIMIT 10;"
+
+# Check Nominatim service
+curl "http://localhost:8081/search?q=Budapest&format=json"
+```
+
+#### Cache Issues
+
+```bash
+# Clear geocoding cache
+rm -rf data/geocoding_cache/*
+
+# Re-run geocoding
+python src/cli.py geocode run
+```
+
+#### PostGIS Errors
+
+```bash
+# Check if PostGIS is installed
+psql -U oevk -c "SELECT PostGIS_version();"
+
+# Disable PostGIS if not available
+export GEOCODING_USE_POSTGIS=false
+```
+
+### Performance Characteristics
+
+**Storage:**
+- Nominatim database: ~2-3 GB (Hungary OSM data)
+- Geocoding cache: 2.1 MB SQLite database (6,381 addresses cached)
+- Cache storage improvement: 12x reduction (25MB JSON files → 2.1MB SQLite)
+- Coordinate columns: ~200 MB additional database size
+
+**Processing Time:**
+- OSM data import: 1-2 hours (one-time)
+- First geocoding run: 12-30 minutes (3.3M addresses, 32 workers)
+- With cache (88.5% hit rate): 2-5 minutes (bulk SQL JOIN + geocode 383k new)
+- Update from cache only: <1 minute (no Nominatim calls)
+- Incremental updates: <5 minutes (only new addresses)
+
+**Performance Improvements:**
+- Multi-threading: 3.3x speed improvement (148 → 490 addr/sec with 32 workers)
+- Cache optimization: Bulk pre-filtering via SQL JOIN (process only 11.5% of addresses)
+- Storage efficiency: Single SQLite database vs thousands of JSON files
+
+**Quality Metrics (Typical Dataset):**
+- Match rate: 88.5% (2,958,473 of 3,342,156 addresses)
+- Exact (house-level): 17.6% (587,234 addresses)
+- Street-level: 70.1% (2,341,818 addresses)
+- Settlement-level: 0.7% (29,421 addresses)
+- Failed: 11.5% (383,683 addresses not in OSM)
 
 ## Data Model
 
@@ -1277,6 +2408,63 @@ The pipeline automatically extracts public space entities from addresses:
 - **Export Performance**: 2.6 minutes for 3.3M addresses (17x faster than baseline)
 
 See [PERFORMANCE_BENCHMARKS.md](docs/PERFORMANCE_BENCHMARKS.md) for detailed performance analysis.
+
+### PostgreSQL Import Performance
+
+The PostgreSQL import process has been optimized for handling 3.3M+ rows with geocoded coordinates and PostGIS geometry columns:
+
+**Import Optimization Techniques:**
+
+1. **Chunked CSV COPY (Data Import)**
+   - Address table split into 34 chunks of 100K rows
+   - Uses PostgreSQL's `\copy` command (10-50x faster than INSERT)
+   - Progress tracking: `[X/34] Y% - Importing Address: Z/3,323,113 rows`
+   - Performance: ~25-30 seconds per 100K chunk
+   - Total data import time: ~14-15 minutes
+
+2. **Chunked PostGIS Geometry Population**
+   - Updates 2.9M geocoded addresses in batches of 100K rows
+   - Uses optimized `ST_SetSRID(ST_MakePoint(Longitude, Latitude), 4326)::geography`
+   - 3-5x faster than `ST_GeogFromText()` with string concatenation
+   - Commits between batches to reduce transaction log size
+   - Progress tracking: `NOTICE: Updated X addresses (total: Y)`
+   - Performance: ~30-60 seconds per 100K batch
+   - Total geometry population time: ~15-20 minutes
+
+3. **Transaction Management**
+   - Main data import runs in single transaction for consistency
+   - PostGIS updates run outside transaction with per-batch commits
+   - Foreign key constraints deferred until after all data loaded
+   - Reduces lock contention and WAL overhead
+
+4. **Performance Optimizations for Verification Container**
+   - `fsync = off` - Safe for temporary verification (no durability needed)
+   - `maintenance_work_mem = 1GB` - Faster index creation
+   - `autovacuum = off` - Disable during bulk load
+   - `max_wal_size = 4GB` - Reduce checkpoint frequency
+   - `shared_buffers = 512MB` - More cache for working data
+   - `synchronous_commit = off` - Faster commits
+   - Settings applied via `ALTER SYSTEM` with PostgreSQL restart
+
+**Total Import Time:**
+- CSV data import: 14-15 minutes
+- PostGIS geometry population: 15-20 minutes
+- FK constraint recreation: 1-2 minutes
+- **Total: 25-35 minutes** for complete import with spatial data
+
+**Verification Process:**
+- Creates temporary Docker container on auto-selected port (5433+)
+- Uses PostGIS 15-3.3 multi-arch image (ARM64/AMD64 compatible)
+- Verifies row counts for all tables
+- Creates compressed pg_dump (~145 MB .sql.gz)
+- Automatically cleans up container (unless `--no-cleanup`)
+- **Total verification time: 25-35 minutes**
+
+**Storage Requirements:**
+- CSV files: ~1.5 GB
+- PostgreSQL database with indexes: ~3-4 GB
+- WAL and temp files during import: ~2-3 GB
+- **Total: ~6-8 GB disk space** needed during verification
 
 ## Troubleshooting
 

@@ -27,8 +27,36 @@ services:
     networks:
       - oevk-network
 
+  nominatim:
+    image: mediagis/nominatim:5.1
+    platform: linux/arm64 # Use linux/amd64 for Intel/AMD processors
+    container_name: ${NOMINATIM_CONTAINER_NAME:-oevk-nominatim}
+    environment:
+      - PBF_URL=${NOMINATIM_PBF_URL:-https://download.geofabrik.de/europe/hungary-latest.osm.pbf}
+      - REPLICATION_URL=https://download.geofabrik.de/europe/hungary-updates/
+      - NOMINATIM_PASSWORD=${NOMINATIM_POSTGRES_PASSWORD:-qaIACxO6wMR3}
+      - NOMINATIM_IMPORT_STYLE=address
+      - FREEZE=true
+    ports:
+      - "${NOMINATIM_PORT:-8081}:8080"
+    volumes:
+      - nominatim_data:/var/lib/postgresql/16/main
+    shm_size: 2gb
+    restart: unless-stopped
+    healthcheck:
+      test:
+        ["CMD-SHELL", "wget --spider -q http://localhost:8080/status || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 10m
+    networks:
+      - oevk-network
+
 volumes:
   postgres_data:
+    driver: local
+  nominatim_data:
     driver: local
 
 networks:

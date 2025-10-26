@@ -60,33 +60,57 @@ class ReleaseWorkflow:
         # Get file information for metadata
         export_files = []
 
-        # Check for all required files in exports directory
-        required_files = [
-            "Addresses",  # Directory containing per-settlement CSV files
-            "Settlements.csv",
-            "Counties.csv",
-            "database.duckdb",
-        ]
-        for file_name in required_files:
-            if (self.exports_dir / file_name).exists():
-                export_files.append(file_name)
+        # Check for PostgreSQL CSV files and schema
+        postgresql_dir = self.exports_dir / "postgresql"
+        schema_file = self.exports_dir / "schema.sql"
+        import_script = self.exports_dir / "import_postgresql.sql"
+
+        # Count CSV files in postgresql directory
+        csv_file_count = 0
+        if postgresql_dir.exists():
+            csv_files = list(postgresql_dir.glob("*.csv"))
+            csv_file_count = len(csv_files)
+            export_files.extend([f"postgresql/{f.name}" for f in csv_files])
+
+        # Add schema and import script if they exist
+        if schema_file.exists():
+            export_files.append("schema.sql")
+        if import_script.exists():
+            export_files.append("import_postgresql.sql")
 
         total_files = len(export_files)
-        total_size = 1  # Default minimum size for validation-only runs
+        total_size = sum(
+            (self.exports_dir / f).stat().st_size
+            for f in ["schema.sql", "import_postgresql.sql"]
+            if (self.exports_dir / f).exists()
+        )
+        if postgresql_dir.exists():
+            total_size += sum(f.stat().st_size for f in postgresql_dir.glob("*.csv"))
 
-        # Combine validation results - consider it passed if exports directory has all required files
+        # Ensure we have minimum value for total_size
+        if total_size == 0:
+            total_size = 1
+
+        # Validation passes if we have:
+        # - PostgreSQL directory with CSV files (at least 10 tables expected)
+        # - schema.sql
+        # - import_postgresql.sql
         validation_status = (
             "passed"
-            if (len(export_files) >= 4)  # All 4 required files
+            if (csv_file_count >= 10 and schema_file.exists() and import_script.exists())
             else "failed"
         )
 
         # Collect validation errors
         validation_errors = []
-        if len(export_files) < 4:
+        if csv_file_count < 10:
             validation_errors.append(
-                f"Missing required files in exports: found {len(export_files)} of 4"
+                f"Insufficient CSV files in postgresql/: found {csv_file_count}, expected at least 10"
             )
+        if not schema_file.exists():
+            validation_errors.append("Missing schema.sql in exports directory")
+        if not import_script.exists():
+            validation_errors.append("Missing import_postgresql.sql in exports directory")
 
         # Generate a deterministic pipeline run ID
         pipeline_run_id = f"validation_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -146,6 +170,20 @@ class ReleaseWorkflow:
             self.logger.logger.info("PostgreSQL artifacts packaged successfully")
         except FileNotFoundError as e:
             self.logger.logger.warning(f"PostgreSQL files not found, skipping: {e}")
+
+        # Package geocoding cache if it exists
+        try:
+            cache_file = "data/geocoding_cache.db"
+            if Path(cache_file).exists():
+                geocoding_cache_artifact = self.packager.package_geocoding_cache(
+                    cache_file, tag, force=force_rebuild
+                )
+                artifacts.append(geocoding_cache_artifact)
+                self.logger.logger.info("Geocoding cache packaged successfully")
+            else:
+                self.logger.logger.info("Geocoding cache not found, skipping")
+        except Exception as e:
+            self.logger.logger.warning(f"Failed to package geocoding cache: {e}")
 
         # Create release package using the correct model structure
         package = ReleasePackage.create(

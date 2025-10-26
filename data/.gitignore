@@ -3,3 +3,4 @@ oevk.csv
 oevk.json
 *.db
 temp/**
+geocoding_cache/**

@@ -5,6 +5,7 @@ import time
 import concurrent.futures
 from typing import List, Tuple, Optional
 import polars as pl
+from tqdm import tqdm
 
 # Hash functions are now implemented inline using DuckDB's built-in functions
 # from src.etl.hashing import (
@@ -23,6 +24,16 @@ import polars as pl
 from src.utils.pipeline_logging import get_logger
 from src.utils.config import get_config
 from src.etl.deduplicate import AddressDeduplicator
+from src.etl.hashing_polars import (
+    apply_hash_address_id,
+    apply_hash_county_id,
+    apply_hash_settlement_id,
+    apply_hash_oevk_id,
+    apply_hash_tevk_id,
+    apply_hash_postal_code_id,
+    apply_hash_polling_station_id,
+)
+from src.etl.string_ops_polars import apply_trim_leading_zeros
 
 logger = get_logger(__name__)
 
@@ -155,9 +166,19 @@ def transform_all_optimized(
     transform_polling_stations(db_connection, run_tag)
 
     # Optimized address transformation
-    if parallel:
+    # Check if Polars-based transformation is enabled (default: True)
+    config = get_config()
+    use_polars = config.get("processing.use_polars_transform", True)
+
+    if use_polars:
+        logger.info("Using Polars-based transformation (faster, optimized)")
+        # Polars transformation is sequential only for now
+        transform_addresses_polars(db_connection, run_tag, chunk_size)
+    elif parallel:
+        logger.info("Using SQL-based parallel transformation (legacy)")
         transform_addresses_parallel(db_connection, run_tag, chunk_size, db_path)
     else:
+        logger.info("Using SQL-based sequential transformation (legacy)")
         transform_addresses_optimized(db_connection, run_tag, chunk_size)
 
     transform_postal_code_settlement_relationships(db_connection, run_tag)
@@ -171,6 +192,20 @@ def transform_all_optimized(
         dedup_result = deduplicate_addresses_in_pipeline(
             db_connection, run_tag, enable_deduplication=True
         )
+
+    # Run geocoding if enabled (after deduplication)
+    from src.etl.geocoding import geocode_canonical_addresses, geocode_polling_stations
+
+    try:
+        # Geocode canonical addresses - use cache only by default (no Nominatim calls)
+        # To enable actual geocoding, run: python src/cli.py geocode run
+        geocode_canonical_addresses(db_connection, run_tag, update_from_cache=True)
+
+        # Geocode polling stations - skipped by default (nominatim.enabled=False)
+        # To enable: set NOMINATIM_ENABLED=true or run: python src/cli.py geocode run
+        geocode_polling_stations(db_connection, run_tag)
+    except Exception as e:
+        logger.warning(f"Geocoding failed but continuing: {e}")
 
     logger.info("Optimized transformation completed successfully")
     return dedup_result
@@ -418,7 +453,7 @@ def transform_polling_stations(
 
 
 def transform_addresses_optimized(
-    db_connection: duckdb.DuckDBPyConnection, run_tag: str, chunk_size: int = 50000
+    db_connection: duckdb.DuckDBPyConnection, run_tag: str, chunk_size: int = 100000
 ) -> None:
     """Transforms staging data into Address table in optimized chunks."""
     logger.info("Transforming Address data with optimized chunk size")
@@ -531,23 +566,27 @@ def transform_addresses_optimized(
         processed_count = min((chunk_num + 1) * chunk_size, total_count)
         progress_percent = processed_count / total_count * 100
 
-        # Calculate estimated total time and time remaining
-        if progress_percent > 0:
-            estimated_total_time = total_elapsed / (progress_percent / 100)
-            time_remaining = estimated_total_time - total_elapsed
+        # Log progress every 10 chunks or on the last chunk to reduce overhead (Quick Win optimization)
+        should_log = (chunk_num + 1) % 10 == 0 or (chunk_num + 1) == total_chunks
 
-            # Format time strings
-            elapsed_str = format_time(total_elapsed)
-            remaining_str = format_time(time_remaining)
-            total_estimated_str = format_time(estimated_total_time)
+        if should_log:
+            # Calculate estimated total time and time remaining
+            if progress_percent > 0:
+                estimated_total_time = total_elapsed / (progress_percent / 100)
+                time_remaining = estimated_total_time - total_elapsed
 
-            logger.info(
-                f"Chunk {chunk_num + 1}/{total_chunks}: {processed_count:,}/{total_count:,} ({progress_percent:.1f}%) - Elapsed: {elapsed_str}, ETA: {remaining_str}, Total: ~{total_estimated_str}"
-            )
-        else:
-            logger.info(
-                f"Chunk {chunk_num + 1}/{total_chunks}: {processed_count:,}/{total_count:,} ({progress_percent:.1f}%) - Starting..."
-            )
+                # Format time strings
+                elapsed_str = format_time(total_elapsed)
+                remaining_str = format_time(time_remaining)
+                total_estimated_str = format_time(estimated_total_time)
+
+                logger.info(
+                    f"Chunk {chunk_num + 1}/{total_chunks}: {processed_count:,}/{total_count:,} ({progress_percent:.1f}%) - Elapsed: {elapsed_str}, ETA: {remaining_str}, Total: ~{total_estimated_str}"
+                )
+            else:
+                logger.info(
+                    f"Chunk {chunk_num + 1}/{total_chunks}: {processed_count:,}/{total_count:,} ({progress_percent:.1f}%) - Starting..."
+                )
 
     final_count = db_connection.execute("SELECT COUNT(*) FROM Address").fetchone()[0]
     total_time = time.time() - start_time
@@ -557,7 +596,7 @@ def transform_addresses_optimized(
 def transform_addresses_parallel(
     db_connection: duckdb.DuckDBPyConnection,
     run_tag: str,
-    chunk_size: int = 50000,
+    chunk_size: int = 100000,
     db_path: str = "",
 ) -> None:
     """Transforms staging data into Address table using parallel processing."""
@@ -588,6 +627,8 @@ def transform_addresses_parallel(
 
         for chunk_num in range(total_chunks):
             offset = chunk_num * chunk_size
+            # Disable individual chunk progress bars to reduce overhead (Quick Win optimization)
+            pbar_pos = None
             future = executor.submit(
                 process_chunk_parallel,
                 db_path,
@@ -598,6 +639,7 @@ def transform_addresses_parallel(
                 chunk_size,
                 total_count,
                 start_time,
+                pbar_pos,
             )
             futures.append((chunk_num, future))
 
@@ -608,25 +650,42 @@ def transform_addresses_parallel(
         completed_futures = []
         failed_chunks = []
 
-        for chunk_num, future in futures:
-            try:
-                result = future.result(timeout=180)  # 3 minute timeout per chunk
-                completed_futures.append((chunk_num, result))
-            except concurrent.futures.TimeoutError:
-                logger.warning(f"Chunk {chunk_num} timed out after 3 minutes")
-                failed_chunks.append(chunk_num)
-                future.cancel()
-            except Exception as e:
-                logger.error(f"Chunk {chunk_num} failed with error: {e}")
-                failed_chunks.append(chunk_num)
+        # Create a mapping of futures to chunk numbers for as_completed
+        future_to_chunk = {future: chunk_num for chunk_num, future in futures}
+
+        # Create global progress bar and individual chunk progress bars
+        with tqdm(total=total_count, desc="Overall progress", unit="rows", position=0,
+                  bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]') as overall_pbar, \
+             tqdm(total=len(futures), desc="Chunks completed", unit="chunk", position=1,
+                  bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]') as chunk_pbar:
+
+            # Process chunks as they complete (not in order)
+            for future in concurrent.futures.as_completed([f for _, f in futures], timeout=300):
+                chunk_num = future_to_chunk[future]
+                try:
+                    result = future.result()
+                    completed_futures.append((chunk_num, result))
+                    rows_processed = min(chunk_size, total_count - (chunk_num * chunk_size))
+                    overall_pbar.update(rows_processed)
+                    chunk_pbar.update(1)
+                except concurrent.futures.TimeoutError:
+                    logger.warning(f"Chunk {chunk_num + 1}/{total_chunks} timed out")
+                    failed_chunks.append(chunk_num)
+                    chunk_pbar.update(1)
+                except Exception as e:
+                    logger.error(f"Chunk {chunk_num + 1}/{total_chunks} failed: {e}")
+                    failed_chunks.append(chunk_num)
+                    chunk_pbar.update(1)
 
         # Retry failed chunks with smaller timeout
         if failed_chunks:
             logger.info(f"Retrying {len(failed_chunks)} failed chunks...")
             retry_futures = []
 
-            for chunk_num in failed_chunks:
+            for idx, chunk_num in enumerate(failed_chunks):
                 offset = chunk_num * chunk_size
+                # Show progress bars for retries (position 2-5 for up to 4 retries)
+                pbar_pos = idx + 2 if idx < 4 else None
                 future = executor.submit(
                     process_chunk_parallel,
                     db_path,
@@ -637,18 +696,25 @@ def transform_addresses_parallel(
                     chunk_size,
                     total_count,
                     start_time,
+                    pbar_pos,
                 )
                 retry_futures.append((chunk_num, future))
 
-            for chunk_num, future in retry_futures:
-                try:
-                    result = future.result(timeout=120)  # 2 minute timeout for retry
-                    completed_futures.append((chunk_num, result))
-                    logger.info(f"Chunk {chunk_num} completed successfully on retry")
-                except concurrent.futures.TimeoutError:
-                    logger.error(f"Chunk {chunk_num} failed again after retry")
-                except Exception as e:
-                    logger.error(f"Chunk {chunk_num} failed on retry with error: {e}")
+            # Progress bar for retry attempts
+            with tqdm(total=len(retry_futures), desc="Retrying failed chunks", unit="chunk",
+                      bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]') as pbar:
+                for chunk_num, future in retry_futures:
+                    try:
+                        result = future.result(timeout=120)  # 2 minute timeout for retry
+                        completed_futures.append((chunk_num, result))
+                        logger.info(f"Chunk {chunk_num} completed successfully on retry")
+                        pbar.update(1)
+                    except concurrent.futures.TimeoutError:
+                        logger.error(f"Chunk {chunk_num} failed again after retry")
+                        pbar.update(1)
+                    except Exception as e:
+                        logger.error(f"Chunk {chunk_num} failed on retry with error: {e}")
+                        pbar.update(1)
 
         # Log final results
         successful_chunks = len([c for c, _ in completed_futures])
@@ -677,9 +743,23 @@ def process_chunk_parallel(
     chunk_size: int,
     total_count: int,
     start_time: float,
+    pbar_position: int = None,
 ) -> None:
     """Process a single chunk in parallel."""
     chunk_start_time = time.time()
+
+    # Create individual progress bar for this chunk if position provided
+    chunk_pbar = None
+    if pbar_position is not None:
+        rows_in_chunk = min(chunk_size, total_count - offset)
+        chunk_pbar = tqdm(
+            total=rows_in_chunk,
+            desc=f"Chunk {chunk_num + 1}/{total_chunks}",
+            unit="rows",
+            position=pbar_position,
+            leave=False,
+            bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt}'
+        )
 
     logger.info(
         f"Starting parallel chunk {chunk_num + 1}/{total_chunks} (offset: {offset:,})"
@@ -773,6 +853,12 @@ def process_chunk_parallel(
         # Get the number of rows inserted/updated
         rows_affected = result.fetchone()[0] if result else 0
 
+        # Update individual chunk progress bar to completion
+        if chunk_pbar is not None:
+            chunk_pbar.n = chunk_pbar.total
+            chunk_pbar.refresh()
+            chunk_pbar.close()
+
         chunk_end_time = time.time()
         chunk_elapsed = chunk_end_time - chunk_start_time
         total_elapsed = chunk_end_time - start_time
@@ -780,14 +866,25 @@ def process_chunk_parallel(
         processed_count = min((chunk_num + 1) * chunk_size, total_count)
         progress_percent = processed_count / total_count * 100
 
+        # Calculate estimated time remaining based on average time per chunk
+        avg_time_per_chunk = total_elapsed / (chunk_num + 1)
+        remaining_chunks = total_chunks - (chunk_num + 1)
+        estimated_remaining = avg_time_per_chunk * remaining_chunks
+
         logger.info(
-            f"Parallel Chunk {chunk_num + 1}/{total_chunks} COMPLETED: {processed_count:,}/{total_count:,} ({progress_percent:.1f}%) - Rows: {rows_affected:,} - Chunk Time: {format_time(chunk_elapsed)}, Total: {format_time(total_elapsed)}"
+            f"Parallel Chunk {chunk_num + 1}/{total_chunks} COMPLETED: {processed_count:,}/{total_count:,} ({progress_percent:.1f}%) - "
+            f"Rows: {rows_affected:,} - Chunk: {format_time(chunk_elapsed)} - "
+            f"Elapsed: {format_time(total_elapsed)} - ETA: {format_time(estimated_remaining)}"
         )
 
     except Exception as e:
+        if chunk_pbar is not None:
+            chunk_pbar.close()
         logger.error(f"ERROR in parallel chunk {chunk_num + 1}/{total_chunks}: {e}")
         raise
     finally:
+        if chunk_pbar is not None and not chunk_pbar.disable:
+            chunk_pbar.close()
         # Commit the transaction and close the database connection
         db_connection.commit()
         db_connection.close()
@@ -1065,3 +1162,298 @@ def deduplicate_addresses_in_pipeline(
     except Exception as e:
         logger.error(f"Deduplication failed: {str(e)}", exc_info=True)
         raise
+
+
+# =============================================================================
+# POLARS-BASED TRANSFORMATION FUNCTIONS
+# =============================================================================
+
+
+def fetch_staging_chunk_polars(
+    db_connection: duckdb.DuckDBPyConnection,
+    run_tag: str,
+    offset: int,
+    chunk_size: int,
+) -> pl.DataFrame:
+    """Fetch a chunk of staging data into Polars DataFrame via Arrow.
+
+    Uses DuckDB's Arrow interface for zero-copy data transfer.
+
+    Args:
+        db_connection: Active DuckDB connection
+        run_tag: Run tag to filter staging data
+        offset: Starting row offset
+        chunk_size: Number of rows to fetch
+
+    Returns:
+        Polars DataFrame with staging data
+    """
+    # Fetch data using Arrow for zero-copy transfer
+    # Filter out addresses with NULL, 0, or '0' postal codes to match SQL behavior
+    # Also normalize tevk_code and polling_station_address to match SQL behavior
+    arrow_table = db_connection.execute(
+        """
+        SELECT
+            county_code, settlement_code, oevk_code,
+            COALESCE(tevk_code, '-') as tevk_code,
+            postal_code,
+            street_name, street_type, house_number, building, staircase,
+            TRIM(polling_station_address) as polling_station_address
+        FROM staging_korzet
+        WHERE run_tag = ?
+          AND postal_code IS NOT NULL
+          AND postal_code != 0
+          AND postal_code != '0'
+          AND postal_code != ''
+        ORDER BY county_code, settlement_code, oevk_code, tevk_code, postal_code,
+                 street_name, street_type, house_number, building, staircase
+        LIMIT ? OFFSET ?
+        """,
+        [run_tag, chunk_size, offset]
+    ).fetch_arrow_table()
+
+    # Convert Arrow to Polars DataFrame
+    chunk_df = pl.from_arrow(arrow_table)
+
+    return chunk_df
+
+
+def transform_chunk_polars(
+    chunk_df: pl.DataFrame,
+    global_offset: int,
+) -> pl.DataFrame:
+    """Transform a chunk using Polars vectorized operations.
+
+    Args:
+        chunk_df: Polars DataFrame with staging data
+        global_offset: Global offset for OriginalOrder calculation
+
+    Returns:
+        Transformed Polars DataFrame ready for insertion
+    """
+    # Add row count for Sequence and OriginalOrder
+    chunk_df = chunk_df.with_row_count(name="row_num", offset=1)
+
+    # Trim leading zeros from address components using Polars map
+    chunk_df = chunk_df.with_columns([
+        pl.col("house_number").map_elements(apply_trim_leading_zeros, return_dtype=pl.Utf8).alias("HouseNumber"),
+        pl.col("building").map_elements(apply_trim_leading_zeros, return_dtype=pl.Utf8).alias("Building"),
+        pl.col("staircase").map_elements(apply_trim_leading_zeros, return_dtype=pl.Utf8).alias("Staircase"),
+    ])
+
+    # Create struct for hash ID generation
+    chunk_df = chunk_df.with_columns([
+        pl.struct([
+            "county_code", "settlement_code", "street_name", "street_type",
+            "house_number", "building", "staircase", "postal_code"
+        ]).map_elements(apply_hash_address_id, return_dtype=pl.Utf8).alias("ID"),
+    ])
+
+    # Generate foreign key hash IDs
+    chunk_df = chunk_df.with_columns([
+        pl.col("county_code").map_elements(apply_hash_county_id, return_dtype=pl.Utf8).alias("County_ID"),
+        pl.struct(["county_code", "settlement_code"]).map_elements(apply_hash_settlement_id, return_dtype=pl.Utf8).alias("Settlement_ID"),
+        pl.struct(["county_code", "oevk_code"]).map_elements(apply_hash_oevk_id, return_dtype=pl.Utf8).alias("NationalIndividualElectoralDistrict_ID"),
+        pl.struct(["county_code", "settlement_code", "tevk_code"]).map_elements(apply_hash_tevk_id, return_dtype=pl.Utf8).alias("SettlementIndividualElectoralDistrict_ID"),
+        pl.col("postal_code").cast(pl.Utf8).map_elements(apply_hash_postal_code_id, return_dtype=pl.Utf8).alias("PostalCode_ID"),
+        pl.struct(["county_code", "settlement_code", "oevk_code", "tevk_code", "polling_station_address"]).map_elements(apply_hash_polling_station_id, return_dtype=pl.Utf8).alias("PollingStation_ID"),
+    ])
+
+    # Create FullAddress by concatenating components
+    chunk_df = chunk_df.with_columns([
+        pl.concat_str([
+            pl.col("street_name"),
+            pl.lit(" "),
+            pl.col("street_type").fill_null(""),
+            pl.lit(" "),
+            pl.col("HouseNumber"),
+            pl.lit(" "),
+            pl.col("Building").fill_null(""),
+            pl.lit(" "),
+            pl.col("Staircase").fill_null(""),
+        ]).str.replace_all(r"\s+", " ").str.strip_chars().alias("FullAddress"),
+    ])
+
+    # Add Sequence and OriginalOrder
+    chunk_df = chunk_df.with_columns([
+        pl.col("row_num").alias("Sequence"),
+        (pl.col("row_num") + global_offset - 1).alias("OriginalOrder"),
+    ])
+
+    # Select and rename columns to match Address table schema
+    result_df = chunk_df.select([
+        "ID",
+        "Sequence",
+        "OriginalOrder",
+        "FullAddress",
+        pl.col("street_name").alias("PublicSpaceName"),
+        pl.col("street_type").fill_null("").alias("PublicSpaceType"),
+        "HouseNumber",
+        "Building",
+        "Staircase",
+        "PostalCode_ID",
+        "PollingStation_ID",
+        "SettlementIndividualElectoralDistrict_ID",
+        "County_ID",
+        "Settlement_ID",
+        "NationalIndividualElectoralDistrict_ID",
+    ])
+
+    return result_df
+
+
+def persist_chunk_to_duckdb(
+    db_connection: duckdb.DuckDBPyConnection,
+    transformed_df: pl.DataFrame,
+) -> int:
+    """Persist transformed Polars DataFrame to DuckDB Address table.
+
+    Uses Arrow for zero-copy transfer.
+
+    Args:
+        db_connection: Active DuckDB connection
+        transformed_df: Transformed Polars DataFrame
+
+    Returns:
+        Number of rows inserted/updated
+    """
+    # Convert Polars to Arrow
+    arrow_table = transformed_df.to_arrow()
+
+    # Register Arrow table with DuckDB (temporary)
+    db_connection.register("temp_chunk_polars", arrow_table)
+
+    # Insert into Address table with conflict handling
+    try:
+        result = db_connection.execute("""
+            INSERT INTO Address (
+                ID, Sequence, OriginalOrder, FullAddress, PublicSpaceName, PublicSpaceType,
+                HouseNumber, Building, Staircase, PostalCode_ID, PollingStation_ID,
+                SettlementIndividualElectoralDistrict_ID, County_ID, Settlement_ID,
+                NationalIndividualElectoralDistrict_ID
+            )
+            SELECT
+                ID, Sequence, OriginalOrder, FullAddress, PublicSpaceName, PublicSpaceType,
+                HouseNumber, Building, Staircase, PostalCode_ID, PollingStation_ID,
+                SettlementIndividualElectoralDistrict_ID, County_ID, Settlement_ID,
+                NationalIndividualElectoralDistrict_ID
+            FROM temp_chunk_polars
+            ON CONFLICT (ID) DO UPDATE SET
+                Sequence = EXCLUDED.Sequence,
+                OriginalOrder = EXCLUDED.OriginalOrder,
+                FullAddress = EXCLUDED.FullAddress,
+                PublicSpaceName = EXCLUDED.PublicSpaceName,
+                PublicSpaceType = EXCLUDED.PublicSpaceType,
+                HouseNumber = EXCLUDED.HouseNumber,
+                Building = EXCLUDED.Building,
+                Staircase = EXCLUDED.Staircase,
+                PostalCode_ID = EXCLUDED.PostalCode_ID,
+                PollingStation_ID = EXCLUDED.PollingStation_ID,
+                SettlementIndividualElectoralDistrict_ID = EXCLUDED.SettlementIndividualElectoralDistrict_ID,
+                County_ID = EXCLUDED.County_ID,
+                Settlement_ID = EXCLUDED.Settlement_ID,
+                NationalIndividualElectoralDistrict_ID = EXCLUDED.NationalIndividualElectoralDistrict_ID
+        """)
+    except Exception as e:
+        # On FK error, dump first row for debugging
+        logger.error(f"Foreign key constraint violation. First row sample:")
+        first_row = transformed_df.head(1)
+        logger.error(f"  PostalCode_ID: {first_row['PostalCode_ID'][0]}")
+        logger.error(f"  PollingStation_ID: {first_row['PollingStation_ID'][0]}")
+        logger.error(f"  County_ID: {first_row['County_ID'][0]}")
+        logger.error(f"  Settlement_ID: {first_row['Settlement_ID'][0]}")
+        logger.error(f"  SettlementIndividualElectoralDistrict_ID: {first_row['SettlementIndividualElectoralDistrict_ID'][0]}")
+        logger.error(f"  NationalIndividualElectoralDistrict_ID: {first_row['NationalIndividualElectoralDistrict_ID'][0]}")
+        db_connection.unregister("temp_chunk_polars")
+        raise
+
+    # Unregister temporary table
+    db_connection.unregister("temp_chunk_polars")
+
+    # Return row count
+    rows_affected = len(transformed_df)
+    return rows_affected
+
+
+def transform_addresses_polars(
+    db_connection: duckdb.DuckDBPyConnection,
+    run_tag: str,
+    chunk_size: int = 100000,
+) -> None:
+    """Transform addresses using Polars-based processing (sequential mode).
+
+    This function uses Polars DataFrames for in-memory transformation instead of
+    complex SQL operations. Provides significant performance improvements through:
+    - Vectorized operations (no row-by-row processing)
+    - Faster xxhash64 in Python vs MD5 in DuckDB
+    - Arrow zero-copy data transfer
+    - Reduced SQL parsing overhead
+
+    Args:
+        db_connection: Active DuckDB connection
+        run_tag: Run tag to process
+        chunk_size: Number of rows per chunk (default: 100,000)
+    """
+    logger.info("Transforming Address data with Polars-based processing")
+
+    # Get total count (excluding addresses with invalid postal codes)
+    total_count = db_connection.execute(
+        """SELECT COUNT(*) FROM staging_korzet
+        WHERE run_tag = ?
+          AND postal_code IS NOT NULL
+          AND postal_code != 0
+          AND postal_code != '0'
+          AND postal_code != ''""",
+        [run_tag]
+    ).fetchone()[0]
+
+    total_chunks = (total_count + chunk_size - 1) // chunk_size
+
+    logger.info(
+        f"Processing {total_count:,} addresses using Polars in {total_chunks} chunks of {chunk_size:,}"
+    )
+
+    start_time = time.time()
+
+    for chunk_num in range(total_chunks):
+        chunk_start_time = time.time()
+        offset = chunk_num * chunk_size
+        global_order_start = offset + 1
+
+        # Fetch chunk (DuckDB → Arrow → Polars)
+        chunk_df = fetch_staging_chunk_polars(db_connection, run_tag, offset, chunk_size)
+
+        # Transform chunk (Polars vectorized operations)
+        transformed_df = transform_chunk_polars(chunk_df, global_order_start)
+
+        # Persist chunk (Polars → Arrow → DuckDB)
+        rows_affected = persist_chunk_to_duckdb(db_connection, transformed_df)
+
+        # Calculate timing
+        chunk_elapsed = time.time() - chunk_start_time
+        total_elapsed = time.time() - start_time
+        processed_count = min((chunk_num + 1) * chunk_size, total_count)
+        progress_percent = processed_count / total_count * 100
+
+        # Log every 10 chunks or last chunk
+        should_log = (chunk_num + 1) % 10 == 0 or (chunk_num + 1) == total_chunks
+
+        if should_log:
+            if progress_percent > 0:
+                estimated_total = total_elapsed / (progress_percent / 100)
+                time_remaining = estimated_total - total_elapsed
+
+                logger.info(
+                    f"Polars Chunk {chunk_num + 1}/{total_chunks}: {processed_count:,}/{total_count:,} "
+                    f"({progress_percent:.1f}%) - Chunk: {format_time(chunk_elapsed)}, "
+                    f"Elapsed: {format_time(total_elapsed)}, ETA: {format_time(time_remaining)}"
+                )
+
+    final_count = db_connection.execute("SELECT COUNT(*) FROM Address").fetchone()[0]
+    total_time = time.time() - start_time
+    throughput = total_count / total_time if total_time > 0 else 0
+
+    logger.info(
+        f"Polars transformation complete: {final_count:,} addresses in {format_time(total_time)} "
+        f"({throughput:.0f} addr/sec)"
+    )

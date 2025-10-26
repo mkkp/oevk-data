@@ -340,20 +340,30 @@ def export_canonical_addresses_optimized(
     total_written = 0
     files_written = 0
 
-    # Open PostgreSQL data.sql file if needed (append mode)
+    # Note: data.sql INSERT statements are no longer generated for canonical addresses
+    # The import_postgresql.sql script uses CSV files with COPY commands (much faster)
+    # Keeping this variable for backward compatibility but not opening the file
     postgresql_file = None
-    if "postgresql" in formats:
-        data_path = os.path.join(export_dir, "data.sql")
-        postgresql_file = open(data_path, "a", encoding="utf-8")
-        postgresql_file.write("\n-- Canonical Addresses (deduplicated)\n")
-        postgresql_file.write("-- Table: Address\n\n")
-        logger.info("Appending canonical addresses to data.sql...")
+
+    # Legacy INSERT-based data.sql generation disabled - use CSV COPY instead
+    # if "postgresql" in formats:
+    #     data_path = os.path.join(export_dir, "data.sql")
+    #     postgresql_file = open(data_path, "a", encoding="utf-8")
+    #     postgresql_file.write("\n-- Canonical Addresses (deduplicated)\n")
+    #     postgresql_file.write("-- Table: Address\n\n")
+    #     logger.info("Appending canonical addresses to data.sql...")
 
     # Write CSV files if requested
     if "csv" in formats:
         logger.info("Writing CSV files...")
 
+    # Track progress for ETA calculation
+    total_settlements = len(settlement_data)
+    processed_settlements = 0
+    settlement_start_time = time.time()
+
     for settlement_name, addresses in settlement_data.items():
+        processed_settlements += 1
         settlement_code = settlement_codes.get(settlement_name, "000")
         safe_name = settlement_name.replace("/", "_").replace("\\", "_")
 
@@ -409,8 +419,8 @@ def export_canonical_addresses_optimized(
                         ]
                     )
 
-        # Write PostgreSQL INSERT statements if requested
-        if postgresql_file:
+        # Write PostgreSQL INSERT statements if requested (DISABLED - using CSV COPY instead)
+        if False and postgresql_file:
             for row in addresses:
                 # Helper function to format SQL values
                 def format_sql_value(value, is_uuid=False, allow_empty_string=False):
@@ -464,16 +474,31 @@ def export_canonical_addresses_optimized(
         total_written += len(addresses)
         files_written += 1
 
-        # Log progress every 500 settlements
-        if files_written % 500 == 0:
-            logger.info(
-                f"Progress: {files_written}/{len(settlement_data)} files, {total_written:,} addresses"
-            )
+        # Log progress with ETA for every settlement
+        elapsed_time = time.time() - settlement_start_time
+        avg_time_per_settlement = elapsed_time / processed_settlements
+        remaining_settlements = total_settlements - processed_settlements
+        eta_seconds = avg_time_per_settlement * remaining_settlements
 
-    # Close PostgreSQL file if it was opened
-    if postgresql_file:
-        postgresql_file.close()
-        logger.info("PostgreSQL data.sql file closed")
+        # Format ETA as HH:MM:SS or MM:SS
+        if eta_seconds >= 3600:
+            eta_str = f"{int(eta_seconds // 3600)}h {int((eta_seconds % 3600) // 60)}m"
+        elif eta_seconds >= 60:
+            eta_str = f"{int(eta_seconds // 60)}m {int(eta_seconds % 60)}s"
+        else:
+            eta_str = f"{int(eta_seconds)}s"
+
+        progress_pct = (processed_settlements / total_settlements) * 100
+        logger.info(
+            f"[{processed_settlements}/{total_settlements}] {progress_pct:.1f}% | "
+            f"{settlement_name}: {len(addresses):,} addresses | "
+            f"ETA: {eta_str}"
+        )
+
+    # Close PostgreSQL file if it was opened (no longer used - CSV COPY is much faster)
+    # if postgresql_file:
+    #     postgresql_file.close()
+    #     logger.info("PostgreSQL data.sql file closed")
 
     write_time = time.time() - write_start
     total_time = time.time() - start_time

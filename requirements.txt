@@ -8,3 +8,4 @@ PyGithub>=2.0.0
 pyarrow>=14.0.0
 numpy
 psycopg2-binary
+tqdm>=4.66.0
