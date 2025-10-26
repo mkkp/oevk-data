@@ -182,6 +182,8 @@ CREATE TABLE IF NOT EXISTS CanonicalAddress (
     SettlementName TEXT NOT NULL,
     StreetName TEXT NOT NULL,
     HouseNumber TEXT NOT NULL,
+    Building TEXT,
+    Staircase TEXT,
     FullAddress TEXT NOT NULL, -- Formatted Hungarian address (e.g., "Körtöltés utca 1/D.")
     AccessibilityFlag TEXT,
     Latitude REAL,

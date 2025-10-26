@@ -1036,13 +1036,15 @@ def deduplicate_addresses_in_pipeline(
         # Register Polars DataFrame with DuckDB and insert
         db_connection.register("canonical_temp", canonical_addresses)
         db_connection.execute("""
-            INSERT INTO CanonicalAddress (ID, CountyCode, SettlementName, StreetName, HouseNumber, FullAddress, AccessibilityFlag)
+            INSERT INTO CanonicalAddress (ID, CountyCode, SettlementName, StreetName, HouseNumber, Building, Staircase, FullAddress, AccessibilityFlag)
             SELECT
                 CAST(canonical_address_id AS VARCHAR) as ID,
                 county_code as CountyCode,
                 settlement_name as SettlementName,
                 street_name as StreetName,
                 house_number as HouseNumber,
+                building as Building,
+                staircase as Staircase,
                 full_address as FullAddress,
                 CASE
                     WHEN accessibility_flag THEN 'I'
@@ -1050,7 +1052,9 @@ def deduplicate_addresses_in_pipeline(
                 END as AccessibilityFlag
             FROM canonical_temp
             ON CONFLICT (CountyCode, SettlementName, FullAddress) DO UPDATE SET
-                AccessibilityFlag = EXCLUDED.AccessibilityFlag
+                AccessibilityFlag = EXCLUDED.AccessibilityFlag,
+                Building = EXCLUDED.Building,
+                Staircase = EXCLUDED.Staircase
         """)
         db_connection.unregister("canonical_temp")
 

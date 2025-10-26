@@ -1151,7 +1151,7 @@ When running the transformation stage locally, the pipeline:
 - **Processes 3M+ rows** from staging data
 - **Creates 11 normalized tables** with referential integrity
 - **Extracts public space entities** (25,117 names, 148 types, 122,524 relationships)
-- **Generates deterministic hash IDs** using xxhash64
+- **Generates deterministic hash IDs** using MD5 (first 16 chars for compatibility)
 - **Handles conflicts** with `ON CONFLICT DO UPDATE` for idempotent processing
 - **Uses parallel processing** with ThreadPoolExecutor for optimal performance
 - **Tracks performance metrics** including timing and row counts
@@ -1854,31 +1854,84 @@ export GEOCODING_USE_POSTGIS=false
 
 ## Data Model
 
-The pipeline transforms source data into 14 normalized tables:
+The pipeline processes data through multiple stages, each with its own data model:
 
-1. **County** (`megye`) - Administrative counties
-2. **Settlement** (`település`) - Cities, towns, villages
-3. **NationalIndividualElectoralDistrict** (`OEVK`) - National electoral districts
-4. **SettlementIndividualElectoralDistrict** (`TEVK`) - Settlement-level electoral districts (independent of OEVK)
-5. **PostalCode** (`irányítószám`) - Postal codes
-6. **PostalCode_Settlement** - Junction table for postal code-settlement relationships
-7. **PollingStation** (`szavazókör`) - Voting locations
-8. **Address** (`cím`) - Individual addresses with electoral assignments (original)
-9. **CanonicalAddress** - Deduplicated unique addresses with Hungarian formatting
-10. **AddressMapping** - Mapping between original and canonical addresses
-11. **AddressPollingStations** - Canonical address to polling station relationships
-12. **AddressPIRCodes** - Canonical address to PIR code relationships
-13. **PublicSpaceName** - Unique public space names extracted from addresses
-14. **PublicSpaceType** - Unique public space types (utca, tér, etc.)
-15. **SettlementPublicSpaces** - Many-to-many relationships between settlements and public spaces
+### Staging Data Model (DuckDB)
 
-### Data Structure Diagram
+The staging model stores raw data from source files for transformation:
+
+**Staging Tables:**
+1. **staging_oevk_json** - Raw OEVK JSON data (polygon boundaries, centers)
+2. **staging_oevk** - Legacy OEVK data structure
+3. **staging_korzet** - Raw Korzet CSV data (3.3M+ address records)
+
+The staging tables are temporary and contain all source data with minimal transformations. They include the `run_tag` column to track pipeline runs.
+
+### DuckDB Internal Data Model
+
+After transformation and deduplication, the pipeline creates normalized tables in DuckDB:
+
+**Core Tables (11):**
+1. **County** (`megye`) - Administrative counties (20 rows)
+2. **Settlement** (`település`) - Cities, towns, villages (3,177 rows)
+3. **NationalIndividualElectoralDistrict** (`OEVK`) - National electoral districts (106 rows)
+4. **SettlementIndividualElectoralDistrict** (`TEVK`) - Settlement-level electoral districts (4,597 rows)
+5. **PostalCode** (`irányítószám`) - Postal codes (3,106 rows)
+6. **PostalCode_Settlement** - Junction table for postal code-settlement relationships (3,684 rows)
+7. **PollingStation** (`szavazókör`) - Voting locations (8,547 rows)
+8. **Address** (`cím`) - Individual addresses with electoral assignments (3.3M original rows)
+9. **CanonicalAddress** - Deduplicated unique addresses with Hungarian formatting (3.3M deduplicated rows)
+10. **PublicSpaceName** - Unique public space names extracted from addresses (25,117 rows)
+11. **PublicSpaceType** - Unique public space types (utca, tér, út, etc.) (148 rows)
+
+**Deduplication Tables (4):**
+12. **AddressMapping** - Mapping between original and canonical addresses (3.3M rows)
+13. **AddressPollingStations** - Canonical address to polling station relationships (3.3M rows)
+14. **AddressPIRCodes** - Canonical address to PIR code relationships (3.3M rows)
+15. **SettlementPublicSpaces** - Many-to-many relationships between settlements and public spaces (122,524 rows)
+
+**Internal Tables:**
+- **Address_new** - Temporary table for public space extraction
+- **DeduplicationReport** - Audit log of deduplication runs
+
+### PostgreSQL/Export Data Model
+
+The export data model is optimized for external consumption and includes only canonical (deduplicated) data:
+
+**Exported Tables (13):**
+1. County
+2. Settlement  
+3. NationalIndividualElectoralDistrict
+4. SettlementIndividualElectoralDistrict
+5. PostalCode
+6. PostalCode_Settlement
+7. PollingStation
+8. **Address** (renamed from CanonicalAddress) - Only deduplicated addresses with UUID v5 IDs
+9. PublicSpaceName
+10. PublicSpaceType
+11. SettlementPublicSpaces
+12. AddressPollingStations (optional, for advanced use)
+13. AddressPIRCodes (optional, for advanced use)
+
+**Key Differences from DuckDB:**
+- Uses **UUID v5** format instead of MD5 hex strings for all IDs
+- **Address table** contains only canonical deduplicated addresses (not original duplicates)
+- **No AddressMapping** table (internal deduplication tracking)
+- **No DeduplicationReport** table (internal audit)
+- **PostGIS GEOGRAPHY columns** for spatial queries (PostgreSQL only)
+- **Trigram GIN indexes** for fast text search (PostgreSQL only)
+
+### DuckDB Internal Model Diagram
 
 ```mermaid
 erDiagram
     County ||--o{ Settlement : contains
     County ||--o{ NationalIndividualElectoralDistrict : contains
+    County ||--o{ Address : contains
+    County ||--o{ PollingStation : contains
     Settlement ||--o{ SettlementIndividualElectoralDistrict : contains
+    Settlement ||--o{ Address : contains
+    Settlement ||--o{ PollingStation : contains
     SettlementIndividualElectoralDistrict ||--o{ Address : "assigned to"
     NationalIndividualElectoralDistrict ||--o{ Address : "assigned to"
     PollingStation ||--o{ Address : contains
@@ -1894,18 +1947,18 @@ erDiagram
     CanonicalAddress ||--o{ AddressPIRCodes : "has"
     
     County {
-        string ID PK "xxhash64(CountyCode)"
+        string ID PK "md5(CountyCode)"
         string CountyCode UK
         string CountyName
     }
     Settlement {
-        string ID PK "xxhash64(CountyCode|SettlementCode)"
+        string ID PK "md5(CountyCode|SettlementCode)"
         string SettlementCode
         string SettlementName
         string County_ID FK
     }
     NationalIndividualElectoralDistrict {
-        string ID PK "xxhash64(CountyCode|OEVK)"
+        string ID PK "md5(CountyCode|OEVK)"
         string OEVK
         string Name
         string Center "Center point coordinates (space-separated)"
@@ -1913,23 +1966,23 @@ erDiagram
         string County_ID FK
     }
     SettlementIndividualElectoralDistrict {
-        string ID PK "xxhash64(CountyCode|SettlementCode|TEVK)"
+        string ID PK "md5(CountyCode|SettlementCode|TEVK)"
         string TEVK
         string Name
         string County_ID FK
         string Settlement_ID FK
     }
     PostalCode {
-        string ID PK "xxhash64(PostalCode)"
+        string ID PK "md5(PostalCode)"
         string PostalCode UK
     }
     PostalCode_Settlement {
-        string ID PK "xxhash64(PostalCode_ID|Settlement_ID)"
+        string ID PK "md5(PostalCode_ID|Settlement_ID)"
         string PostalCode_ID FK
         string Settlement_ID FK
     }
     PollingStation {
-        string ID PK "xxhash64(CountyCode|SettlementCode|OEVK|TEVK|PollingStationAddress)"
+        string ID PK "md5(CountyCode|SettlementCode|OEVK|TEVK|PollingStationAddress)"
         string PollingStationAddress
         string SettlementIndividualElectoralDistrict_ID FK
         string County_ID FK
@@ -1937,7 +1990,7 @@ erDiagram
         string NationalIndividualElectoralDistrict_ID FK
     }
     Address {
-        string ID PK "xxhash64(address components)"
+        string ID PK "md5(address components)"
         integer Sequence
         integer OriginalOrder
         string FullAddress
@@ -1954,44 +2007,186 @@ erDiagram
         string NationalIndividualElectoralDistrict_ID FK
     }
     PublicSpaceName {
-        string ID PK "xxhash64(PublicSpaceName)"
+        string ID PK "md5(PublicSpaceName)"
         string PublicSpaceName UK
     }
     PublicSpaceType {
-        string ID PK "xxhash64(PublicSpaceType)"
+        string ID PK "md5(PublicSpaceType)"
         string PublicSpaceType UK
     }
     SettlementPublicSpaces {
-        string ID PK "xxhash64(Settlement_ID|PublicSpaceName_ID|PublicSpaceType_ID)"
+        string ID PK "md5(Settlement_ID|PublicSpaceName_ID|PublicSpaceType_ID)"
         string Settlement_ID FK
         string PublicSpaceName_ID FK
         string PublicSpaceType_ID FK
     }
     CanonicalAddress {
-        string ID PK "xxhash64(CountyCode|SettlementName|FullAddress)"
-        string CountyCode
-        string SettlementName
+        string ID PK "md5(CountyCode|SettlementName|FullAddress)"
+        string CountyCode "County code (text, not FK)"
+        string SettlementName "Settlement name (text, not FK)"
         string StreetName
         string HouseNumber
+        string Building
+        string Staircase
         string FullAddress "Formatted Hungarian address"
         string AccessibilityFlag
         timestamp CreatedAt
     }
     AddressMapping {
-        string ID PK "xxhash64(OriginalAddressID|CanonicalAddressID)"
+        string ID PK "md5(OriginalAddressID|CanonicalAddressID)"
         string OriginalAddressID FK
         string CanonicalAddressID FK
     }
     AddressPollingStations {
-        string ID PK "xxhash64(CanonicalAddressID|PollingStationID)"
+        string ID PK "md5(CanonicalAddressID|PollingStationID)"
         string CanonicalAddressID FK
         string PollingStationID FK
     }
     AddressPIRCodes {
-        string ID PK "xxhash64(CanonicalAddressID|PIRCode)"
+        string ID PK "md5(CanonicalAddressID|PIRCode)"
         string CanonicalAddressID FK
         string PIRCode FK
     }
+```
+
+**Notes:**
+- **Address table** contains original addresses with all duplicates (3.3M+ rows)
+- **CanonicalAddress table** contains deduplicated unique addresses (3.3M rows, ~0.4% reduction)
+- **AddressMapping** links original addresses to their canonical representation
+- **CanonicalAddress** stores `CountyCode` and `SettlementName` as text (not foreign keys)
+- To join CanonicalAddress with Settlement: `County.CountyCode = CanonicalAddress.CountyCode AND Settlement.SettlementName = CanonicalAddress.SettlementName`
+
+### PostgreSQL/Export Model Diagram
+
+```mermaid
+erDiagram
+    County ||--o{ Settlement : contains
+    County ||--o{ NationalIndividualElectoralDistrict : contains
+    County ||--o{ Address : contains
+    County ||--o{ PollingStation : contains
+    Settlement ||--o{ SettlementIndividualElectoralDistrict : contains
+    Settlement ||--o{ Address : "contains (via text join)"
+    Settlement ||--o{ PollingStation : contains
+    SettlementIndividualElectoralDistrict ||--o{ Address : "assigned to"
+    NationalIndividualElectoralDistrict ||--o{ Address : "assigned to"
+    PollingStation ||--o{ Address : contains
+    PostalCode ||--o{ PostalCode_Settlement : has
+    Settlement ||--o{ PostalCode_Settlement : has
+    PostalCode ||--o{ Address : assigned
+    Settlement ||--o{ SettlementPublicSpaces : has
+    PublicSpaceName ||--o{ SettlementPublicSpaces : has
+    PublicSpaceType ||--o{ SettlementPublicSpaces : has
+    Address ||--o{ AddressPollingStations : "has (optional export)"
+    Address ||--o{ AddressPIRCodes : "has (optional export)"
+    
+    County {
+        uuid ID PK "uuid5(md5(CountyCode))"
+        string CountyCode UK
+        string CountyName
+    }
+    Settlement {
+        uuid ID PK "uuid5(md5(CountyCode|SettlementCode))"
+        string SettlementCode
+        string SettlementName
+        uuid County_ID FK
+    }
+    NationalIndividualElectoralDistrict {
+        uuid ID PK "uuid5(md5(CountyCode|OEVK))"
+        string OEVK
+        string Name
+        string Center "PostGIS POINT or text"
+        string Polygon "PostGIS POLYGON or text"
+        geography Geometry "PostGIS GEOGRAPHY (PostgreSQL only)"
+        uuid County_ID FK
+    }
+    SettlementIndividualElectoralDistrict {
+        uuid ID PK "uuid5(md5(CountyCode|SettlementCode|TEVK))"
+        string TEVK
+        string Name
+        uuid County_ID FK
+        uuid Settlement_ID FK
+    }
+    PostalCode {
+        uuid ID PK "uuid5(md5(PostalCode))"
+        string PostalCode UK
+    }
+    PostalCode_Settlement {
+        uuid ID PK "uuid5(md5(PostalCode_ID|Settlement_ID))"
+        uuid PostalCode_ID FK
+        uuid Settlement_ID FK
+    }
+    PollingStation {
+        uuid ID PK "uuid5(md5(...))"
+        string PollingStationAddress
+        real Latitude
+        real Longitude
+        geography Geometry "PostGIS GEOGRAPHY (PostgreSQL only)"
+        string GeocodingQuality
+        uuid SettlementIndividualElectoralDistrict_ID FK
+        uuid County_ID FK
+        uuid Settlement_ID FK
+        uuid NationalIndividualElectoralDistrict_ID FK
+    }
+    Address {
+        uuid ID PK "uuid5(md5(...))"
+        integer Sequence
+        integer OriginalOrder
+        string FullAddress
+        string PublicSpaceName
+        string PublicSpaceType
+        string HouseNumber
+        string Building
+        string Staircase
+        string CountyCode "Text (for join to County)"
+        string SettlementName "Text (for join to Settlement)"
+        real Latitude
+        real Longitude
+        geography Geometry "PostGIS GEOGRAPHY (PostgreSQL only)"
+        string GeocodingQuality
+        string AccessibilityFlag
+        integer OriginalAddressCount "Number of duplicates merged"
+        uuid PostalCode_ID FK
+        uuid PollingStation_ID FK
+        uuid SettlementIndividualElectoralDistrict_ID FK
+        uuid County_ID FK
+        uuid Settlement_ID FK
+        uuid NationalIndividualElectoralDistrict_ID FK
+    }
+    PublicSpaceName {
+        uuid ID PK "uuid5(md5(PublicSpaceName))"
+        string PublicSpaceName UK
+    }
+    PublicSpaceType {
+        uuid ID PK "uuid5(md5(PublicSpaceType))"
+        string PublicSpaceType UK
+    }
+    SettlementPublicSpaces {
+        uuid ID PK "uuid5(md5(...))"
+        uuid Settlement_ID FK
+        uuid PublicSpaceName_ID FK
+        uuid PublicSpaceType_ID FK
+    }
+    AddressPollingStations {
+        uuid ID PK "uuid5(md5(AddressID|PollingStationID))"
+        uuid AddressID FK
+        uuid PollingStationID FK
+    }
+    AddressPIRCodes {
+        uuid ID PK "uuid5(md5(AddressID|PIRCode))"
+        uuid AddressID FK
+        string PIRCode
+    }
+```
+
+**Key Differences from DuckDB Model:**
+- **Address** table contains only **canonical deduplicated addresses** (renamed from CanonicalAddress)
+- All IDs use **UUID v5 format** instead of MD5 hex strings
+- **PostGIS GEOGRAPHY columns** for spatial queries (Latitude/Longitude also preserved as REAL)
+- Address table includes `CountyCode` and `SettlementName` as text fields for joining
+- `OriginalAddressCount` shows how many duplicate addresses were merged
+- **No AddressMapping table** (internal tracking, not exported)
+- **No original Address table** (duplicates not exported by default)
+- AddressPollingStations and AddressPIRCodes are **optional exports** (for advanced use cases)
 ```
 
 **Note on TEVK and OEVK Relationship:**  
@@ -2043,7 +2238,7 @@ flowchart TD
     
     subgraph F [Address Deduplication]
         F1[Format Addresses<br/>Hungarian conventions]
-        F2[Generate Canonical IDs<br/>xxhash64]
+        F2[Generate Canonical IDs<br/>md5]
         F3[Create Canonical Addresses<br/>0.39% reduction]
         F4[Preserve Relationships<br/>Polling Stations, PIR Codes]
     end
@@ -2149,11 +2344,11 @@ This section shows how source CSV columns map to database tables and columns.
 | Source Field | Target Table | Target Column | Transformation |
 |--------------|--------------|---------------|----------------|
 | `maz` | County | CountyCode | Direct mapping |
-| `maz` | NationalIndividualElectoralDistrict | County_ID | xxhash64(maz) |
+| `maz` | NationalIndividualElectoralDistrict | County_ID | md5(maz) |
 | `evk` | NationalIndividualElectoralDistrict | OEVK | Direct mapping |
 | `centrum` | NationalIndividualElectoralDistrict | Center | Direct mapping (stored as text "lat lon") |
 | `poligon` | NationalIndividualElectoralDistrict | Polygon | Direct mapping (stored as text coordinates) |
-| `maz` + `evk` | NationalIndividualElectoralDistrict | ID | xxhash64(maz\|evk) |
+| `maz` + `evk` | NationalIndividualElectoralDistrict | ID | md5(maz\|evk) |
 
 #### From Korzet_allomany_orszagos.csv
 
@@ -2161,36 +2356,36 @@ This section shows how source CSV columns map to database tables and columns.
 |----------------------|---------------------|-----------------|---------------|----------------|
 | **County & Settlement** | | | | |
 | Vármegye kód | CountyCode | County | CountyCode | Direct mapping |
-| Vármegye kód | CountyCode | County | ID | xxhash64(CountyCode) |
+| Vármegye kód | CountyCode | County | ID | md5(CountyCode) |
 | Vármegye | CountyName | County | CountyName | Direct mapping |
 | Település kód | SettlementCode | Settlement | SettlementCode | Direct mapping |
-| Település kód | SettlementCode | Settlement | ID | xxhash64(CountyCode\|SettlementCode) |
+| Település kód | SettlementCode | Settlement | ID | md5(CountyCode\|SettlementCode) |
 | Település | SettlementName | Settlement | SettlementName | Direct mapping |
-| Vármegye kód | CountyCode | Settlement | County_ID | xxhash64(CountyCode) |
+| Vármegye kód | CountyCode | Settlement | County_ID | md5(CountyCode) |
 | **Electoral Districts** | | | | |
 | OEVK | OEVK Code | NationalIndividualElectoralDistrict | OEVK | Direct mapping |
 | OEVK | OEVK Code | NationalIndividualElectoralDistrict | Name | Derived: Settlement.SettlementName + " " + OEVK |
 | TEVK | TEVK Code | SettlementIndividualElectoralDistrict | TEVK | Direct mapping (can be NULL) |
 | TEVK | TEVK Code | SettlementIndividualElectoralDistrict | Name | Derived: Settlement.SettlementName [+ " " + TEVK if not NULL] |
-| OEVK + TEVK | - | SettlementIndividualElectoralDistrict | ID | xxhash64(CountyCode\|SettlementCode\|COALESCE(TEVK,'-')\|OEVK) |
+| OEVK + TEVK | - | SettlementIndividualElectoralDistrict | ID | md5(CountyCode\|SettlementCode\|COALESCE(TEVK,'-')\|OEVK) |
 | **Polling Stations** | | | | |
 | Szavazókör | PollingStationCode | PollingStation | - | Technical ID (not stored) |
 | Szavazókör cím | PollingStationAddress | PollingStation | PollingStationAddress | Direct mapping |
-| Szavazókör cím | PollingStationAddress | PollingStation | ID | xxhash64(CountyCode\|SettlementCode\|OEVK\|COALESCE(TEVK,'-')\|PollingStationAddress) |
+| Szavazókör cím | PollingStationAddress | PollingStation | ID | md5(CountyCode\|SettlementCode\|OEVK\|COALESCE(TEVK,'-')\|PollingStationAddress) |
 | Számlálásra kijelölt | CountingFlag | - | - | Audit only (not stored in target) |
 | Akadálymentesített | AccessibilityFlag | CanonicalAddress | AccessibilityFlag | Used in deduplication (TRUE prioritized) |
 | **Postal Codes** | | | | |
 | PIR | PostalCode | PostalCode | PostalCode | Direct mapping |
-| PIR | PostalCode | PostalCode | ID | xxhash64(PostalCode) |
-| PIR | PostalCode | PostalCode_Settlement | PostalCode_ID | xxhash64(PostalCode) |
-| PIR | PostalCode | Address | PostalCode_ID | xxhash64(PostalCode) |
+| PIR | PostalCode | PostalCode | ID | md5(PostalCode) |
+| PIR | PostalCode | PostalCode_Settlement | PostalCode_ID | md5(PostalCode) |
+| PIR | PostalCode | Address | PostalCode_ID | md5(PostalCode) |
 | **Address Components** | | | | |
 | Közterület név | PublicSpaceName | PublicSpaceName | PublicSpaceName | Extracted and normalized (uppercase) |
-| Közterület név | PublicSpaceName | PublicSpaceName | ID | xxhash64(PublicSpaceName) |
+| Közterület név | PublicSpaceName | PublicSpaceName | ID | md5(PublicSpaceName) |
 | Közterület név | PublicSpaceName | Address | PublicSpaceName | Direct mapping |
 | Közterület név | PublicSpaceName | CanonicalAddress | StreetName | Used in canonical ID generation |
 | Közterület jelleg | PublicSpaceType | PublicSpaceType | PublicSpaceType | Extracted and normalized (e.g., "utca", "tér", "út") |
-| Közterület jelleg | PublicSpaceType | PublicSpaceType | ID | xxhash64(PublicSpaceType) |
+| Közterület jelleg | PublicSpaceType | PublicSpaceType | ID | md5(PublicSpaceType) |
 | Közterület jelleg | PublicSpaceType | Address | PublicSpaceType | Direct mapping |
 | Házszám | HouseNumber | Address | HouseNumber | Direct mapping with leading zeros |
 | Házszám | HouseNumber | CanonicalAddress | HouseNumber | Cleaned: leading zeros removed, ranges preserved |
@@ -2203,9 +2398,9 @@ This section shows how source CSV columns map to database tables and columns.
 | Multiple columns | - | Address | FullAddress | Concatenated: PublicSpaceName + PublicSpaceType + HouseNumber + Building + Staircase |
 | Multiple columns | - | Address | Sequence | Row number within polling station |
 | Multiple columns | - | Address | OriginalOrder | Global loading order from source CSV |
-| Multiple columns | - | Address | ID | xxhash64(all address components) |
+| Multiple columns | - | Address | ID | md5(all address components) |
 | Multiple columns | - | CanonicalAddress | FullAddress | Formatted Hungarian address (e.g., "Körtöltés utca 1/D.") |
-| Multiple columns | - | CanonicalAddress | ID | xxhash64(CountyCode\|SettlementName\|FullAddress) |
+| Multiple columns | - | CanonicalAddress | ID | md5(CountyCode\|SettlementName\|FullAddress) |
 
 ### Junction/Relationship Tables
 
@@ -2227,7 +2422,7 @@ The deduplication process identifies duplicate addresses based on formatted Hung
    - Handle ranges: `"000001-00005"` → `"1-5"`
    - Convert numeric staircases to Roman numerals: `"0001"` → `"I"`
    - Apply Hungarian address format: `"{Street Name} {Street Type} {House Number}. {Building}. épület {Staircase}. lépcsőház"`
-3. **Canonical ID**: xxhash64(CountyCode | SettlementName | FullAddress)
+3. **Canonical ID**: md5(CountyCode | SettlementName | FullAddress)
 4. **Relationship Preservation**: All polling stations and PIR codes are preserved through junction tables
 
 **Example**:
@@ -2257,20 +2452,20 @@ These columns are exported to PostgreSQL and CSV formats, enabling geospatial an
 
 ### ID Generation Strategy
 
-All IDs use **xxhash64** for deterministic, collision-resistant identifiers:
+All IDs use **MD5 hashing** (first 16 characters) for deterministic, collision-resistant identifiers:
 
 | Table | ID Components | Example |
 |-------|--------------|---------|
-| County | CountyCode | xxhash64("01") |
-| Settlement | CountyCode \| SettlementCode | xxhash64("01\|001") |
-| NationalIndividualElectoralDistrict | CountyCode \| OEVK | xxhash64("01\|01") |
-| SettlementIndividualElectoralDistrict | CountyCode \| SettlementCode \| TEVK \| OEVK | xxhash64("01\|001\|-\|01") |
-| PostalCode | PostalCode | xxhash64("1014") |
-| PollingStation | CountyCode \| SettlementCode \| OEVK \| TEVK \| Address | xxhash64("01\|001\|01\|-\|Úri utca 38...") |
-| Address | All address components | xxhash64(CountyCode\|SettlementCode\|...\|HouseNumber\|Building\|Staircase) |
-| CanonicalAddress | CountyCode \| SettlementName \| FullAddress | xxhash64("01\|Budapest I\|Anna utca 1.") |
-| PublicSpaceName | PublicSpaceName | xxhash64("Kossuth Lajos") |
-| PublicSpaceType | PublicSpaceType | xxhash64("utca") |
+| County | CountyCode | md5("01") |
+| Settlement | CountyCode \| SettlementCode | md5("01\|001") |
+| NationalIndividualElectoralDistrict | CountyCode \| OEVK | md5("01\|01") |
+| SettlementIndividualElectoralDistrict | CountyCode \| SettlementCode \| TEVK \| OEVK | md5("01\|001\|-\|01") |
+| PostalCode | PostalCode | md5("1014") |
+| PollingStation | CountyCode \| SettlementCode \| OEVK \| TEVK \| Address | md5("01\|001\|01\|-\|Úri utca 38...") |
+| Address | All address components | md5(CountyCode\|SettlementCode\|...\|HouseNumber\|Building\|Staircase) |
+| CanonicalAddress | CountyCode \| SettlementName \| FullAddress | md5("01\|Budapest I\|Anna utca 1.") |
+| PublicSpaceName | PublicSpaceName | md5("Kossuth Lajos") |
+| PublicSpaceType | PublicSpaceType | md5("utca") |
 
 **Note**: NULL values in TEVK are replaced with `"-"` for consistent hashing.
 
@@ -2280,7 +2475,7 @@ Exported CSV files use **UUID v3** with 'oevk.hu' namespace for global uniquenes
 
 ```python
 OEVK_NAMESPACE = uuid.uuid3(uuid.NAMESPACE_DNS, "oevk.hu")
-exported_id = uuid.uuid3(OEVK_NAMESPACE, internal_xxhash64_id)
+exported_id = uuid.uuid5(OEVK_NAMESPACE, internal_md5_id)
 ```
 
 This ensures:
@@ -2344,7 +2539,7 @@ The pipeline automatically extracts public space entities from addresses:
 
 - **Entity Recognition**: Extracts public space names and types from address strings
 - **Relationship Mapping**: Creates many-to-many relationships between settlements and public spaces
-- **Hash-based IDs**: Deterministic xxhash64 identifiers for all entities
+- **Hash-based IDs**: Deterministic MD5 identifiers for all entities
 - **Data Integrity**: Full validation and referential integrity
 - **Export Support**: CSV export for all public space entities
 

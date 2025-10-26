@@ -786,6 +786,7 @@ def geocode_canonical_addresses(db_connection, run_tag: str, ignore_geocoded: bo
         # Drop the _new columns
         updated_df = updated_df.select([
             'ID', 'CountyCode', 'SettlementName', 'StreetName', 'HouseNumber',
+            'Building', 'Staircase',
             'FullAddress', 'AccessibilityFlag', 'Latitude', 'Longitude',
             'GeocodingQuality', 'GeocodingSource', 'GeocodedAt', 'CreatedAt'
         ])

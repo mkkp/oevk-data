@@ -759,7 +759,7 @@ def export_canonical_address_to_csv(
             writer = csv.writer(f)
             writer.writerow([
                 'ID', 'CountyCode', 'SettlementName', 'StreetName', 'HouseNumber',
-                'FullAddress', 'AccessibilityFlag', 'Latitude', 'Longitude',
+                'Building', 'Staircase', 'FullAddress', 'AccessibilityFlag', 'Latitude', 'Longitude',
                 'GeocodingQuality', 'GeocodingSource', 'GeocodedAt', 'CreatedAt',
                 'County_ID', 'Settlement_ID', 'PollingStation_ID', 'PIRCode'
             ])
@@ -780,6 +780,8 @@ def export_canonical_address_to_csv(
             ca.SettlementName,
             ca.StreetName,
             ca.HouseNumber,
+            ca.Building,
+            ca.Staircase,
             ca.FullAddress,
             ca.AccessibilityFlag,
             ca.Latitude,
@@ -822,6 +824,7 @@ def export_canonical_address_to_csv(
         # Write header
         writer.writerow([
             'ID', 'CountyCode', 'SettlementName', 'StreetName', 'HouseNumber',
+            'Building', 'Staircase',
             'FullAddress', 'AccessibilityFlag', 'Latitude', 'Longitude',
             'GeocodingQuality', 'GeocodingSource', 'GeocodedAt', 'CreatedAt',
             'County_ID', 'Settlement_ID', 'PollingStation_ID', 'PIRCode'
@@ -837,9 +840,9 @@ def export_canonical_address_to_csv(
             for row in batch:
                 converted_row = list(row)
                 converted_row[0] = to_uuid5(row[0])   # ID
-                converted_row[13] = to_uuid5(row[13])  # County_ID
-                converted_row[14] = to_uuid5(row[14])  # Settlement_ID
-                converted_row[15] = to_uuid5(row[15])  # PollingStation_ID
+                converted_row[15] = to_uuid5(row[15])  # County_ID (was 13, now 15 due to Building/Staircase)
+                converted_row[16] = to_uuid5(row[16])  # Settlement_ID (was 14, now 16)
+                converted_row[17] = to_uuid5(row[17])  # PollingStation_ID (was 15, now 17)
                 converted_batch.append(converted_row)
 
             writer.writerows(converted_batch)
@@ -1119,7 +1122,7 @@ def generate_postgresql_import_script(
                     f.write(f"\\echo 'Importing {table}...'\n")
                     # Use chunked import for large table
                     csv_path = csv_files[table]
-                    columns = "(ID, CountyCode, SettlementName, StreetName, HouseNumber, FullAddress, AccessibilityFlag, Latitude, Longitude, GeocodingQuality, GeocodingSource, GeocodedAt, CreatedAt, County_ID, Settlement_ID, PollingStation_ID, PIRCode)"
+                    columns = "(ID, CountyCode, SettlementName, StreetName, HouseNumber, Building, Staircase, FullAddress, AccessibilityFlag, Latitude, Longitude, GeocodingQuality, GeocodingSource, GeocodedAt, CreatedAt, County_ID, Settlement_ID, PollingStation_ID, PIRCode)"
                     generate_chunked_copy_commands(f, table, csv_path, csv_dir, csv_file, chunk_size, columns)
                 # Special handling for PollingStation - also has Geometry column
                 elif table == "PollingStation":
