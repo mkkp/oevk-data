@@ -2065,7 +2065,7 @@ erDiagram
     County ||--o{ Address : contains
     County ||--o{ PollingStation : contains
     Settlement ||--o{ SettlementIndividualElectoralDistrict : contains
-    Settlement ||--o{ Address : "contains (via text join)"
+    Settlement ||--o{ Address : contains
     Settlement ||--o{ PollingStation : contains
     SettlementIndividualElectoralDistrict ||--o{ Address : "assigned to"
     NationalIndividualElectoralDistrict ||--o{ Address : "assigned to"
@@ -2182,7 +2182,7 @@ erDiagram
 - **Address** table contains only **canonical deduplicated addresses** (renamed from CanonicalAddress)
 - All IDs use **UUID v5 format** instead of MD5 hex strings
 - **PostGIS GEOGRAPHY columns** for spatial queries (Latitude/Longitude also preserved as REAL)
-- Address table includes `CountyCode` and `SettlementName` as text fields for joining
+- Address table includes `CountyCode` and `SettlementName` as text fields AND proper foreign keys (`County_ID`, `Settlement_ID`)
 - `OriginalAddressCount` shows how many duplicate addresses were merged
 - **No AddressMapping table** (internal tracking, not exported)
 - **No original Address table** (duplicates not exported by default)

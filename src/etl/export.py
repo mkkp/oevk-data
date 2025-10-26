@@ -334,6 +334,8 @@ CREATE TABLE IF NOT EXISTS Address (
     SettlementName TEXT NOT NULL,
     StreetName TEXT NOT NULL,
     HouseNumber TEXT NOT NULL,
+    Building TEXT,
+    Staircase TEXT,
     FullAddress TEXT NOT NULL,
     AccessibilityFlag TEXT,
     Latitude REAL,
