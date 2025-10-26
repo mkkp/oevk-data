@@ -2187,7 +2187,6 @@ erDiagram
 - **No AddressMapping table** (internal tracking, not exported)
 - **No original Address table** (duplicates not exported by default)
 - AddressPollingStations and AddressPIRCodes are **optional exports** (for advanced use cases)
-```
 
 **Note on TEVK and OEVK Relationship:**  
 TEVK (SettlementIndividualElectoralDistrict) and OEVK (NationalIndividualElectoralDistrict) are **parallel, independent electoral systems**, not hierarchical. TEVK is for settlement-level municipal elections organized by settlement boundaries, while OEVK is for national parliamentary elections organized by county boundaries. Addresses maintain references to both systems independently via the Address table.
