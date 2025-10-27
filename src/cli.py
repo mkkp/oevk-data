@@ -330,6 +330,61 @@ Examples:
         help="Continue even if verification fails",
     )
 
+    # db import-csv command
+    import_csv_parser = db_subparsers.add_parser(
+        "import-csv", help="Import CSV files into PostgreSQL using fast COPY method"
+    )
+    import_csv_parser.add_argument(
+        "--exports-dir",
+        default="exports",
+        help="Path to exports directory containing schema.sql and postgresql/ (default: exports)",
+    )
+    import_csv_parser.add_argument(
+        "--host",
+        default="localhost",
+        help="PostgreSQL host (default: localhost)",
+    )
+    import_csv_parser.add_argument(
+        "--port",
+        type=int,
+        default=5432,
+        help="PostgreSQL port (default: 5432)",
+    )
+    import_csv_parser.add_argument(
+        "--database",
+        default="oevk",
+        help="PostgreSQL database name (default: oevk)",
+    )
+    import_csv_parser.add_argument(
+        "--user",
+        default="oevk",
+        help="PostgreSQL user (default: oevk)",
+    )
+    import_csv_parser.add_argument(
+        "--password",
+        help="PostgreSQL password (optional, will prompt if not provided)",
+    )
+    import_csv_parser.add_argument(
+        "--create-database",
+        action="store_true",
+        help="Create database if it doesn't exist",
+    )
+    import_csv_parser.add_argument(
+        "--drop-database",
+        action="store_true",
+        help="Drop and recreate database (WARNING: destroys existing data)",
+    )
+    import_csv_parser.add_argument(
+        "--docker",
+        action="store_true",
+        help="Use Docker PostgreSQL container (auto-creates if needed)",
+    )
+    import_csv_parser.add_argument(
+        "--container-name",
+        default="oevk-postgresql",
+        help="Docker container name (default: oevk-postgresql)",
+    )
+
     # db export-dump command
     export_dump_parser = db_subparsers.add_parser(
         "export-dump", help="Export PostgreSQL database to gzipped dump file"
@@ -419,6 +474,94 @@ Examples:
         "--password",
         default="oevk",
         help="PostgreSQL password (default: oevk)",
+    )
+
+    # db verify command
+    verify_parser = db_subparsers.add_parser(
+        "verify", help="Verify PostgreSQL import and create gzipped dump"
+    )
+    verify_parser.add_argument(
+        "--exports-dir",
+        default="exports",
+        help="Path to exports directory (default: exports)",
+    )
+    verify_parser.add_argument(
+        "--container-name",
+        default="oevk-verify",
+        help="Docker container name (default: oevk-verify)",
+    )
+    verify_parser.add_argument(
+        "--no-cleanup",
+        action="store_true",
+        help="Keep the verification container running after completion",
+    )
+
+    # Geocode commands
+    geocode_parser = subparsers.add_parser(
+        "geocode",
+        help="Manage address geocoding with Nominatim"
+    )
+    geocode_subparsers = geocode_parser.add_subparsers(
+        dest="geocode_command",
+        help="Geocoding operation to perform"
+    )
+
+    # geocode setup command
+    setup_geocode_parser = geocode_subparsers.add_parser(
+        "setup",
+        help="Set up and start Nominatim Docker service"
+    )
+    setup_geocode_parser.add_argument(
+        "--force-reimport",
+        action="store_true",
+        help="Force reimport of OSM data (destroys existing Nominatim database)"
+    )
+    setup_geocode_parser.add_argument(
+        "--container-name",
+        default=None,
+        help="Docker container name (default: from NOMINATIM_CONTAINER_NAME env var)"
+    )
+
+    # geocode run command
+    run_geocode_parser = geocode_subparsers.add_parser(
+        "run",
+        help="Run geocoding on addresses and polling stations"
+    )
+    run_geocode_parser.add_argument(
+        "--db-path",
+        default="data/oevk.db",
+        help="Path to the database file (default: data/oevk.db)"
+    )
+    run_geocode_parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=None,
+        help="Number of addresses per batch (default: from NOMINATIM_BATCH_SIZE env var)"
+    )
+    run_geocode_parser.add_argument(
+        "--run-tag",
+        help="Run tag for tracking geocoding operations (default: 'geocoding')"
+    )
+    run_geocode_parser.add_argument(
+        "--ignore-geocoded",
+        action="store_true",
+        help="Skip addresses that already have successful coordinates (retry only failures)"
+    )
+    run_geocode_parser.add_argument(
+        "--update-from-cache",
+        action="store_true",
+        help="Update database from cache only (no actual geocoding) - useful to populate DB from pre-built cache"
+    )
+
+    # geocode status command
+    status_geocode_parser = geocode_subparsers.add_parser(
+        "status",
+        help="Show geocoding statistics and coverage"
+    )
+    status_geocode_parser.add_argument(
+        "--db-path",
+        default="data/oevk.db",
+        help="Path to the database file (default: data/oevk.db)"
     )
 
     # Release commands (if available)
@@ -601,6 +744,8 @@ Examples:
         export_data(args)
     elif args.command == "db":
         handle_db_command(args)
+    elif args.command == "geocode":
+        handle_geocode_command(args)
     elif args.command == "release" and RELEASE_AVAILABLE:
         handle_release_command(args)
     else:
@@ -734,6 +879,7 @@ def export_data(args):
                     exports_dir=args.output_dir,
                     container_name="oevk-verify-export",
                     cleanup=True,
+                    run_tag=run_tag,
                 )
                 if dump_path:
                     logger.info(f"✓ PostgreSQL dump created: {dump_path}")
@@ -807,10 +953,19 @@ def run_pipeline(args):
 
             load_staging_data(conn, file_paths, run_tag)
 
-            # Get row count after ingestion
-            staging_count_after = conn.execute(
-                "SELECT COUNT(*) FROM staging_korzet"
-            ).fetchone()[0]
+            # Get row count after ingestion (try staging_korzet first, fall back to staging_oevk_json)
+            try:
+                staging_count_after = conn.execute(
+                    "SELECT COUNT(*) FROM staging_korzet"
+                ).fetchone()[0]
+            except Exception:
+                try:
+                    staging_count_after = conn.execute(
+                        "SELECT COUNT(*) FROM staging_oevk_json"
+                    ).fetchone()[0]
+                except Exception:
+                    staging_count_after = 0
+                    logger.warning("Could not get row count from staging tables")
 
             metrics.log_step_completion("ingest", row_count=staging_count_after)
 
@@ -894,10 +1049,14 @@ def run_pipeline(args):
             logger.info("=== EXPORT STAGE ===")
             metrics.log_step_start("export")
 
-            # Get total row count for export
-            total_rows = conn.execute("SELECT COUNT(*) FROM staging_korzet").fetchone()[
-                0
-            ]
+            # Get total row count for export (use Address table instead of staging)
+            # staging_korzet may not exist if running export independently
+            try:
+                total_rows = conn.execute("SELECT COUNT(*) FROM Address").fetchone()[0]
+            except Exception:
+                # Fallback if Address doesn't exist either
+                total_rows = 0
+                logger.warning("Could not get row count from Address table")
 
             # Determine export formats based on flag
             skip_postgresql = getattr(args, "skip_postgresql_export", False)
@@ -942,7 +1101,19 @@ def run_pipeline(args):
 
         # Final pipeline summary
         total_duration = time.time() - (metrics.start_time or time.time())
-        total_rows = conn.execute("SELECT COUNT(*) FROM staging_korzet").fetchone()[0]
+
+        # Get total row count (prefer Address table if available, fall back to staging)
+        try:
+            total_rows = conn.execute("SELECT COUNT(*) FROM Address").fetchone()[0]
+        except Exception:
+            try:
+                total_rows = conn.execute("SELECT COUNT(*) FROM staging_korzet").fetchone()[0]
+            except Exception:
+                try:
+                    total_rows = conn.execute("SELECT COUNT(*) FROM staging_oevk_json").fetchone()[0]
+                except Exception:
+                    total_rows = 0
+                    logger.warning("Could not get row count for performance summary")
 
         logger.info("=== PIPELINE PERFORMANCE SUMMARY ===")
         logger.info(f"Total duration: {total_duration:.2f} seconds")
@@ -969,6 +1140,7 @@ def run_pipeline(args):
                     exports_dir=args.output_dir,
                     container_name="oevk-verify-pipeline",
                     cleanup=True,
+                    run_tag=run_tag,
                 )
                 if dump_path:
                     logger.info(f"✓ PostgreSQL dump created: {dump_path}")
@@ -991,12 +1163,621 @@ def handle_db_command(args):
     """Handle database subcommands."""
     if args.db_command == "setup":
         setup_database(args)
+    elif args.db_command == "import-csv":
+        import_csv_to_postgresql(args)
     elif args.db_command == "export-dump":
         export_database_dump(args)
     elif args.db_command == "import-dump":
         import_database_dump(args)
+    elif args.db_command == "verify":
+        verify_postgresql_import(args)
     else:
-        print("Unknown database command. Use 'db setup', 'db export-dump', or 'db import-dump'.")
+        print("Unknown database command. Use 'db setup', 'db import-csv', 'db export-dump', 'db import-dump', or 'db verify'.")
+        sys.exit(1)
+
+
+def import_csv_to_postgresql(args):
+    """Import CSV files into PostgreSQL using fast COPY method."""
+    import subprocess
+    import getpass
+    from pathlib import Path
+    from src.utils.docker_postgresql import DockerPostgreSQLManager
+
+    logger.info("=== PostgreSQL CSV Import ===")
+
+    exports_dir = Path(args.exports_dir)
+    schema_file = exports_dir / "schema.sql"
+    import_file = exports_dir / "import_postgresql.sql"
+    postgresql_dir = exports_dir / "postgresql"
+
+    # Validate files exist
+    if not schema_file.exists():
+        logger.error(f"Schema file not found: {schema_file}")
+        logger.info("Run 'python -m src.cli export' first to generate PostgreSQL files")
+        sys.exit(1)
+
+    if not import_file.exists():
+        logger.error(f"Import script not found: {import_file}")
+        logger.info("Run 'python -m src.cli export' first to generate PostgreSQL files")
+        sys.exit(1)
+
+    if not postgresql_dir.exists() or not postgresql_dir.is_dir():
+        logger.error(f"PostgreSQL CSV directory not found: {postgresql_dir}")
+        logger.info("Run 'python -m src.cli export' first to generate PostgreSQL CSV files")
+        sys.exit(1)
+
+    # Count CSV files
+    csv_files = list(postgresql_dir.glob("*.csv"))
+    logger.info(f"Found {len(csv_files)} CSV files in {postgresql_dir}")
+
+    # Docker mode
+    if args.docker:
+        logger.info("Using Docker PostgreSQL container")
+
+        config = Config()
+        use_postgis = config.get("postgresql.use_postgis", True)
+
+        manager = DockerPostgreSQLManager(
+            container_name=args.container_name,
+            use_postgis=use_postgis
+        )
+
+        try:
+            # Check if container exists
+            result = subprocess.run(
+                ["docker", "ps", "-a", "--filter", f"name={args.container_name}", "--format", "{{.Names}}"],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+
+            if args.container_name in result.stdout:
+                logger.info(f"Using existing container: {args.container_name}")
+
+                # Check if running
+                result = subprocess.run(
+                    ["docker", "ps", "--filter", f"name={args.container_name}", "--format", "{{.Names}}"],
+                    capture_output=True,
+                    text=True,
+                    check=True
+                )
+
+                if args.container_name not in result.stdout:
+                    logger.info("Starting container...")
+                    subprocess.run(["docker", "start", args.container_name], check=True)
+
+                    # Wait for ready
+                    if not manager.wait_for_ready(timeout=30):
+                        logger.error("Container failed to become ready")
+                        sys.exit(1)
+            else:
+                logger.info(f"Creating new container: {args.container_name}")
+                manager.create_container()
+
+                if not manager.wait_for_ready(timeout=30):
+                    logger.error("Container failed to become ready")
+                    sys.exit(1)
+
+            conn_info = manager.get_connection_info()
+            host = "localhost"
+            port = conn_info["port"]
+            database = conn_info["database"]
+            user = conn_info["user"]
+            password = conn_info["password"]
+
+        except Exception as e:
+            logger.error(f"Failed to setup Docker container: {e}")
+            sys.exit(1)
+    else:
+        # Direct connection
+        host = args.host
+        port = args.port
+        database = args.database
+        user = args.user
+        password = args.password
+
+        # Prompt for password if not provided
+        if not password:
+            password = getpass.getpass(f"Password for {user}@{host}:{port}: ")
+
+    logger.info(f"Connection: {user}@{host}:{port}/{database}")
+
+    # Handle database creation/recreation
+    if args.drop_database:
+        logger.warning(f"Dropping database: {database}")
+
+        if args.docker:
+            result = subprocess.run(
+                ["docker", "exec", args.container_name, "psql", "-U", user, "-d", "postgres", "-c", f"DROP DATABASE IF EXISTS {database};"],
+                capture_output=True,
+                text=True
+            )
+        else:
+            result = subprocess.run(
+                ["psql", "-h", host, "-p", str(port), "-U", user, "-d", "postgres", "-c", f"DROP DATABASE IF EXISTS {database};"],
+                env={"PGPASSWORD": password},
+                capture_output=True,
+                text=True
+            )
+
+        if result.returncode != 0:
+            logger.warning(f"Could not drop database: {result.stderr}")
+
+        args.create_database = True  # Force creation after drop
+
+    if args.create_database:
+        logger.info(f"Creating database: {database}")
+
+        if args.docker:
+            result = subprocess.run(
+                ["docker", "exec", args.container_name, "psql", "-U", user, "-d", "postgres", "-c", f"CREATE DATABASE {database};"],
+                capture_output=True,
+                text=True
+            )
+        else:
+            result = subprocess.run(
+                ["psql", "-h", host, "-p", str(port), "-U", user, "-d", "postgres", "-c", f"CREATE DATABASE {database};"],
+                env={"PGPASSWORD": password},
+                capture_output=True,
+                text=True
+            )
+
+        if result.returncode != 0:
+            if "already exists" not in result.stderr:
+                logger.error(f"Failed to create database: {result.stderr}")
+                sys.exit(1)
+            else:
+                logger.info("Database already exists")
+
+        # Enable PostGIS if available
+        logger.info("Enabling PostGIS extension...")
+
+        if args.docker:
+            result = subprocess.run(
+                ["docker", "exec", args.container_name, "psql", "-U", user, "-d", database, "-c", "CREATE EXTENSION IF NOT EXISTS postgis;"],
+                capture_output=True,
+                text=True
+            )
+        else:
+            result = subprocess.run(
+                ["psql", "-h", host, "-p", str(port), "-U", user, "-d", database, "-c", "CREATE EXTENSION IF NOT EXISTS postgis;"],
+                env={"PGPASSWORD": password},
+                capture_output=True,
+                text=True
+            )
+
+        if result.returncode != 0:
+            logger.warning(f"Could not enable PostGIS: {result.stderr}")
+
+    # Import schema and CSV data
+    if args.docker:
+        # Use Docker exec for import (copy files to container)
+        logger.info("Step 1/3: Copying files to Docker container...")
+
+        # Copy exports directory to container
+        exports_dir_abs = exports_dir.absolute()
+        subprocess.run(
+            ["docker", "cp", str(exports_dir_abs), f"{args.container_name}:/tmp/exports"],
+            check=True,
+            capture_output=True
+        )
+        logger.info(f"✓ Copied exports to /tmp/exports in container")
+
+        # Import schema
+        logger.info("Step 2/3: Importing schema...")
+        result = subprocess.run(
+            ["docker", "exec", args.container_name, "psql", "-U", user, "-d", database, "-f", "/tmp/exports/schema.sql"],
+            capture_output=True,
+            text=True
+        )
+
+        if result.returncode != 0:
+            logger.error(f"Schema import failed: {result.stderr}")
+            sys.exit(1)
+
+        logger.info("✓ Schema imported successfully")
+
+        # Create Docker-compatible import script (rewrite paths to /tmp/exports/postgresql/)
+        logger.info("Creating Docker-compatible import script...")
+        import re
+        with open(import_file, 'r', encoding='utf-8') as f:
+            import_content = f.read()
+
+        # Replace paths: FROM '/path/to/postgresql/File.csv' -> FROM '/tmp/exports/postgresql/File.csv'
+        import_content = re.sub(
+            r"FROM '.*?/postgresql/([^']+)'",
+            r"FROM '/tmp/exports/postgresql/\1'",
+            import_content
+        )
+
+        # Write to temp file
+        docker_import_file = exports_dir / "import_postgresql_docker.sql"
+        with open(docker_import_file, 'w', encoding='utf-8') as f:
+            f.write(import_content)
+
+        # Copy Docker import script to container
+        subprocess.run(
+            ["docker", "cp", str(docker_import_file), f"{args.container_name}:/tmp/import_postgresql.sql"],
+            check=True,
+            capture_output=True
+        )
+
+        # Import CSV data
+        logger.info(f"Step 3/3: Importing CSV data ({len(csv_files)} files)...")
+        logger.info("This may take 5-15 minutes for 3.3M addresses...")
+        logger.info("Progress output will be shown below...")
+
+        # Run without capturing output so we can see progress in real-time
+        result = subprocess.run(
+            ["docker", "exec", args.container_name, "psql", "-U", user, "-d", database, "-f", "/tmp/import_postgresql.sql"]
+        )
+
+        if result.returncode != 0:
+            logger.error(f"CSV import failed with exit code {result.returncode}")
+            sys.exit(1)
+
+        logger.info("✓ CSV data imported successfully")
+
+        # Clean up temp file
+        if docker_import_file.exists():
+            docker_import_file.unlink()
+    else:
+        # Use host psql (requires psql installed locally)
+        logger.info("Step 1/2: Importing schema...")
+        result = subprocess.run(
+            ["psql", "-h", host, "-p", str(port), "-U", user, "-d", database, "-f", str(schema_file)],
+            env={"PGPASSWORD": password},
+            capture_output=True,
+            text=True
+        )
+
+        if result.returncode != 0:
+            logger.error(f"Schema import failed: {result.stderr}")
+            sys.exit(1)
+
+        logger.info("✓ Schema imported successfully")
+
+        # Import CSV data
+        logger.info(f"Step 2/2: Importing CSV data ({len(csv_files)} files)...")
+        logger.info("This may take 5-15 minutes for 3.3M addresses...")
+        logger.info("Progress output will be shown below...")
+
+        # Run without capturing output so we can see progress in real-time
+        result = subprocess.run(
+            ["psql", "-h", host, "-p", str(port), "-U", user, "-d", database, "-f", str(import_file)],
+            env={"PGPASSWORD": password}
+        )
+
+        if result.returncode != 0:
+            logger.error(f"CSV import failed with exit code {result.returncode}")
+            sys.exit(1)
+
+        logger.info("✓ CSV data imported successfully")
+
+    # Verify import
+    logger.info("Verifying import...")
+
+    if args.docker:
+        # Use Docker exec for verification (try lowercase first, then uppercase)
+        result = subprocess.run(
+            ["docker", "exec", args.container_name, "psql", "-U", user, "-d", database, "-t", "-c", "SELECT COUNT(*) FROM address;"],
+            capture_output=True,
+            text=True
+        )
+
+        # If lowercase fails, try uppercase (quoted)
+        if result.returncode != 0:
+            result = subprocess.run(
+                ["docker", "exec", args.container_name, "psql", "-U", user, "-d", database, "-t", "-c", 'SELECT COUNT(*) FROM "Address";'],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+
+        address_count = int(result.stdout.strip())
+        logger.info(f"✓ Verification successful: {address_count:,} addresses imported")
+
+        # Show table counts
+        logger.info("\nTable row counts:")
+        result = subprocess.run(
+            ["docker", "exec", args.container_name, "psql", "-U", user, "-d", database, "-c",
+             "SELECT schemaname, relname as tablename, n_live_tup as row_count FROM pg_stat_user_tables ORDER BY n_live_tup DESC;"],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+
+        logger.info(result.stdout)
+    else:
+        # Use host psql for verification (try lowercase first, then uppercase)
+        result = subprocess.run(
+            ["psql", "-h", host, "-p", str(port), "-U", user, "-d", database, "-t", "-c", "SELECT COUNT(*) FROM address;"],
+            env={"PGPASSWORD": password},
+            capture_output=True,
+            text=True
+        )
+
+        # If lowercase fails, try uppercase (quoted)
+        if result.returncode != 0:
+            result = subprocess.run(
+                ["psql", "-h", host, "-p", str(port), "-U", user, "-d", database, "-t", "-c", 'SELECT COUNT(*) FROM "Address";'],
+                env={"PGPASSWORD": password},
+                capture_output=True,
+                text=True,
+                check=True
+            )
+
+        address_count = int(result.stdout.strip())
+        logger.info(f"✓ Verification successful: {address_count:,} addresses imported")
+
+        # Show table counts
+        logger.info("\nTable row counts:")
+        result = subprocess.run(
+            ["psql", "-h", host, "-p", str(port), "-U", user, "-d", database, "-c",
+             "SELECT schemaname, relname as tablename, n_live_tup as row_count FROM pg_stat_user_tables ORDER BY n_live_tup DESC;"],
+            env={"PGPASSWORD": password},
+            capture_output=True,
+            text=True,
+            check=True
+        )
+
+        logger.info(result.stdout)
+
+    logger.info("\n=== PostgreSQL CSV Import Completed Successfully ===")
+    if args.docker:
+        logger.info(f"Connection: docker exec -it {args.container_name} psql -U {user} -d {database}")
+    else:
+        logger.info(f"Connection: psql -h {host} -p {port} -U {user} -d {database}")
+
+
+def geocode_setup(args):
+    """Set up and start Nominatim Docker service."""
+    import subprocess
+    from src.utils.config import get_config
+
+    logger.info("Setting up Nominatim geocoding service")
+
+    # Get configuration
+    config = get_config()
+    container_name = args.container_name or config.get("nominatim", {}).get("container_name", "oevk-nominatim")
+
+    try:
+        # Check if Docker is running
+        result = subprocess.run(
+            ["docker", "info"],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        if result.returncode != 0:
+            logger.error("Docker is not running. Please start Docker and try again.")
+            sys.exit(1)
+
+        # Check if container already exists
+        result = subprocess.run(
+            ["docker", "ps", "-a", "--filter", f"name={container_name}", "--format", "{{.Names}}"],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+
+        container_exists = container_name in result.stdout
+
+        if container_exists and args.force_reimport:
+            logger.info(f"Removing existing container '{container_name}' for reimport")
+            subprocess.run(
+                ["docker", "rm", "-f", container_name],
+                check=True
+            )
+            container_exists = False
+
+        if container_exists:
+            # Check if container is running
+            result = subprocess.run(
+                ["docker", "ps", "--filter", f"name={container_name}", "--format", "{{.Names}}"],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+
+            if container_name in result.stdout:
+                logger.info(f"Container '{container_name}' is already running")
+            else:
+                logger.info(f"Starting existing container '{container_name}'")
+                subprocess.run(
+                    ["docker", "start", container_name],
+                    check=True
+                )
+        else:
+            # Start new container using docker-compose
+            logger.info("Starting Nominatim service with docker-compose")
+            logger.info("This will download Hungary OSM data (~286 MB) and import it")
+            logger.info("Initial import may take 1-2 hours depending on hardware")
+
+            subprocess.run(
+                ["docker-compose", "up", "-d", "nominatim"],
+                check=True
+            )
+
+            logger.info("Nominatim service started. Monitoring import progress...")
+            logger.info("You can check logs with: docker logs -f {container_name}")
+
+        # Wait for service to be ready
+        logger.info("Waiting for Nominatim service to be ready...")
+        base_url = config.get("nominatim", {}).get("base_url", "http://localhost:8081")
+
+        import requests
+        import time
+
+        max_attempts = 60
+        for attempt in range(max_attempts):
+            try:
+                response = requests.get(f"{base_url}/status", timeout=5)
+                if response.status_code == 200:
+                    logger.info("✅ Nominatim service is ready!")
+                    logger.info(f"Service URL: {base_url}")
+                    sys.exit(0)
+            except Exception:
+                pass
+
+            if attempt % 10 == 0:
+                logger.info(f"Still waiting... (attempt {attempt + 1}/{max_attempts})")
+
+            time.sleep(10)
+
+        logger.warning("Nominatim service did not become ready within expected time")
+        logger.info("Check container logs with: docker logs {container_name}")
+
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Failed to set up Nominatim service: {e}")
+        sys.exit(1)
+    except Exception as e:
+        logger.error(f"Unexpected error during Nominatim setup: {e}")
+        sys.exit(1)
+
+
+def geocode_run(args):
+    """Run geocoding on addresses and polling stations."""
+    from src.etl.geocoding import geocode_canonical_addresses, geocode_polling_stations
+
+    logger.info("Running geocoding on addresses and polling stations")
+
+    # Get database connection
+    db_connection = get_database_connection(args.db_path)
+
+    try:
+        run_tag = args.run_tag or "geocoding"
+
+        # Override batch size if provided
+        if args.batch_size:
+            from src.utils.config import get_config
+            config = get_config()
+            config["nominatim"]["batch_size"] = args.batch_size
+
+        # Geocode canonical addresses
+        logger.info("Geocoding canonical addresses...")
+        ignore_geocoded = args.ignore_geocoded if hasattr(args, 'ignore_geocoded') else False
+        update_from_cache = args.update_from_cache if hasattr(args, 'update_from_cache') else False
+        address_stats = geocode_canonical_addresses(db_connection, run_tag, ignore_geocoded=ignore_geocoded, update_from_cache=update_from_cache)
+
+        logger.info(f"Canonical address geocoding complete:")
+        logger.info(f"  Total: {address_stats.get('total', 0)}")
+        logger.info(f"  Cached: {address_stats.get('cached', 0)}")
+        logger.info(f"  Exact matches: {address_stats.get('exact', 0)}")
+        logger.info(f"  Street matches: {address_stats.get('street', 0)}")
+        logger.info(f"  Settlement matches: {address_stats.get('settlement', 0)}")
+        logger.info(f"  Failed: {address_stats.get('failed', 0)}")
+
+        # Geocode polling stations
+        logger.info("Geocoding polling stations...")
+        station_stats = geocode_polling_stations(db_connection, run_tag, update_from_cache=update_from_cache)
+
+        logger.info(f"Polling station geocoding complete:")
+        logger.info(f"  Total: {station_stats.get('total', 0)}")
+        logger.info(f"  Cached: {station_stats.get('cached', 0)}")
+        logger.info(f"  Exact matches: {station_stats.get('exact', 0)}")
+        logger.info(f"  Street matches: {station_stats.get('street', 0)}")
+        logger.info(f"  Settlement matches: {station_stats.get('settlement', 0)}")
+        logger.info(f"  Failed: {station_stats.get('failed', 0)}")
+
+        logger.info("✅ Geocoding completed successfully")
+
+    except Exception as e:
+        logger.error(f"Geocoding failed: {e}")
+        sys.exit(1)
+    finally:
+        db_connection.close()
+
+
+def geocode_status(args):
+    """Show geocoding statistics and coverage."""
+    logger.info("Retrieving geocoding statistics")
+
+    # Get database connection
+    db_connection = get_database_connection(args.db_path)
+
+    try:
+        # Query canonical address statistics
+        logger.info("\n=== Canonical Address Geocoding Status ===")
+
+        total_addresses = db_connection.execute(
+            "SELECT COUNT(*) FROM CanonicalAddress"
+        ).fetchone()[0]
+
+        geocoded_addresses = db_connection.execute(
+            "SELECT COUNT(*) FROM CanonicalAddress WHERE Latitude IS NOT NULL"
+        ).fetchone()[0]
+
+        quality_stats = db_connection.execute("""
+            SELECT
+                GeocodingQuality,
+                COUNT(*) as count
+            FROM CanonicalAddress
+            WHERE GeocodingQuality IS NOT NULL
+            GROUP BY GeocodingQuality
+            ORDER BY count DESC
+        """).fetchall()
+
+        logger.info(f"Total addresses: {total_addresses:,}")
+        logger.info(f"Geocoded: {geocoded_addresses:,} ({geocoded_addresses / total_addresses * 100:.1f}%)")
+        logger.info(f"Not geocoded: {total_addresses - geocoded_addresses:,}")
+
+        if quality_stats:
+            logger.info("\nQuality distribution:")
+            for quality, count in quality_stats:
+                percentage = count / geocoded_addresses * 100 if geocoded_addresses > 0 else 0
+                logger.info(f"  {quality}: {count:,} ({percentage:.1f}%)")
+
+        # Query polling station statistics
+        logger.info("\n=== Polling Station Geocoding Status ===")
+
+        total_stations = db_connection.execute(
+            "SELECT COUNT(*) FROM PollingStation"
+        ).fetchone()[0]
+
+        geocoded_stations = db_connection.execute(
+            "SELECT COUNT(*) FROM PollingStation WHERE Latitude IS NOT NULL"
+        ).fetchone()[0]
+
+        station_quality_stats = db_connection.execute("""
+            SELECT
+                GeocodingQuality,
+                COUNT(*) as count
+            FROM PollingStation
+            WHERE GeocodingQuality IS NOT NULL
+            GROUP BY GeocodingQuality
+            ORDER BY count DESC
+        """).fetchall()
+
+        logger.info(f"Total polling stations: {total_stations:,}")
+        logger.info(f"Geocoded: {geocoded_stations:,} ({geocoded_stations / total_stations * 100:.1f}%)")
+        logger.info(f"Not geocoded: {total_stations - geocoded_stations:,}")
+
+        if station_quality_stats:
+            logger.info("\nQuality distribution:")
+            for quality, count in station_quality_stats:
+                percentage = count / geocoded_stations * 100 if geocoded_stations > 0 else 0
+                logger.info(f"  {quality}: {count:,} ({percentage:.1f}%)")
+
+        logger.info("\n✅ Status check complete")
+
+    except Exception as e:
+        logger.error(f"Failed to retrieve geocoding status: {e}")
+        sys.exit(1)
+    finally:
+        db_connection.close()
+
+
+def handle_geocode_command(args):
+    """Handle geocoding subcommands."""
+    if args.geocode_command == "setup":
+        geocode_setup(args)
+    elif args.geocode_command == "run":
+        geocode_run(args)
+    elif args.geocode_command == "status":
+        geocode_status(args)
+    else:
+        print("Unknown geocode command. Use 'geocode setup', 'geocode run', or 'geocode status'.")
         sys.exit(1)
 
 
@@ -1209,8 +1990,14 @@ def setup_database(args):
 
     config = Config()
     pg_config = config.get("postgresql")
+    use_postgis = pg_config.get("use_postgis", True)
 
     container_name = "oevk"
+
+    # Detect platform for Docker image selection
+    import platform
+    machine = platform.machine().lower()
+    docker_platform = "linux/arm64" if machine in ["arm64", "aarch64"] else "linux/amd64"
 
     # Check if container exists
     try:
@@ -1241,10 +2028,14 @@ def setup_database(args):
         container_exists = False
 
     if not container_exists:
-        logger.info(f"Creating Docker container: {container_name}")
+        # Choose Docker image based on PostGIS configuration
+        postgres_image = "postgis/postgis:15-3.3" if use_postgis else "postgres:16"
+        logger.info(f"Creating Docker container: {container_name} (image: {postgres_image}, platform: {docker_platform})")
         docker_command = [
             "docker",
             "run",
+            "--platform",
+            docker_platform,
             "--name",
             container_name,
             "-e",
@@ -1256,7 +2047,7 @@ def setup_database(args):
             "-d",
             "-p",
             f"{pg_config['port']}:5432",
-            "postgres",
+            postgres_image,
         ]
         subprocess.run(docker_command, check=True)
         logger.info("Waiting for PostgreSQL to be ready...")
@@ -1432,6 +2223,61 @@ def import_database_dump(args):
         logger.info("✅ Dump imported successfully")
     except Exception as e:
         logger.error(f"❌ Failed to import dump: {e}")
+        sys.exit(1)
+
+
+def verify_postgresql_import(args):
+    """Verify PostgreSQL import and create gzipped dump."""
+    from pathlib import Path
+
+    logger.info("=== PostgreSQL Import Verification and Dump Creation ===")
+
+    exports_dir = Path(args.exports_dir)
+
+    # Validate exports directory
+    if not exports_dir.exists():
+        logger.error(f"Exports directory not found: {exports_dir}")
+        logger.info("Run 'python -m src.cli export' first to generate PostgreSQL files")
+        sys.exit(1)
+
+    schema_file = exports_dir / "schema.sql"
+    import_file = exports_dir / "import_postgresql.sql"
+    postgresql_dir = exports_dir / "postgresql"
+
+    # Validate required files
+    if not schema_file.exists():
+        logger.error(f"Schema file not found: {schema_file}")
+        logger.info("Run 'python -m src.cli export' first")
+        sys.exit(1)
+
+    if not import_file.exists():
+        logger.error(f"Import script not found: {import_file}")
+        logger.info("Run 'python -m src.cli export' first")
+        sys.exit(1)
+
+    if not postgresql_dir.exists():
+        logger.error(f"PostgreSQL CSV directory not found: {postgresql_dir}")
+        logger.info("Run 'python -m src.cli export' first")
+        sys.exit(1)
+
+    try:
+        dump_path = verify_and_dump_postgresql(
+            exports_dir=str(exports_dir),
+            container_name=args.container_name,
+            cleanup=not args.no_cleanup,
+        )
+
+        if dump_path:
+            logger.info("")
+            logger.info("=" * 80)
+            logger.info(f"✅ Verification completed successfully")
+            logger.info(f"📦 Dump file: {dump_path}")
+            logger.info("=" * 80)
+        else:
+            logger.warning("Verification completed but dump was not created")
+
+    except Exception as e:
+        logger.error(f"❌ Verification failed: {e}")
         sys.exit(1)
 
 

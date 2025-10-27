@@ -30,6 +30,7 @@ class Config:
                 "chunk_size": 100000,  # Number of rows to process at once
                 "max_workers": 4,  # Maximum number of parallel workers
                 "sample_size": -1,  # Sample size for testing (-1 for all data)
+                "use_polars_transform": True,  # Use Polars-based transformation (faster)
             },
             # Database settings
             "database": {
@@ -75,6 +76,23 @@ class Config:
                 "user": "oevk",
                 "password": "oevk",
                 "use_postgis": True,  # Enable PostGIS extension for geospatial data
+            },
+            # Nominatim geocoding settings
+            "nominatim": {
+                "enabled": False,  # Disabled by default - enable with NOMINATIM_ENABLED=true
+                "mode": "local",
+                "base_url": "http://localhost:8081",
+                "batch_size": 100,
+                "rate_limit": 0,  # 0 = no limit for local instance
+                "timeout": 30,
+                "cache_dir": "data/geocoding_cache",
+                "retry_attempts": 3,
+                "min_quality": "street",
+                "similarity_threshold": 0.6,
+            },
+            # Geocoding settings
+            "geocoding": {
+                "use_postgis": True,  # Enable PostGIS GEOGRAPHY columns
             },
         }
 
@@ -122,6 +140,10 @@ class Config:
         sample_size = os.getenv("SAMPLE_SIZE")
         if sample_size:
             self._config["processing"]["sample_size"] = int(sample_size)
+
+        use_polars_transform = os.getenv("USE_POLARS_TRANSFORM")
+        if use_polars_transform is not None:
+            self._config["processing"]["use_polars_transform"] = use_polars_transform.lower() == "true"
 
         # Database settings
         db_memory_limit = os.getenv("DB_MEMORY_LIMIT")
@@ -198,6 +220,52 @@ class Config:
             self._config["postgresql"]["use_postgis"] = (
                 postgres_use_postgis.lower() == "true"
             )
+
+        # Nominatim settings
+        nominatim_enabled = os.getenv("NOMINATIM_ENABLED")
+        if nominatim_enabled is not None:
+            self._config["nominatim"]["enabled"] = nominatim_enabled.lower() == "true"
+
+        nominatim_mode = os.getenv("NOMINATIM_MODE")
+        if nominatim_mode:
+            self._config["nominatim"]["mode"] = nominatim_mode
+
+        nominatim_base_url = os.getenv("NOMINATIM_BASE_URL")
+        if nominatim_base_url:
+            self._config["nominatim"]["base_url"] = nominatim_base_url
+
+        nominatim_batch_size = os.getenv("NOMINATIM_BATCH_SIZE")
+        if nominatim_batch_size:
+            self._config["nominatim"]["batch_size"] = int(nominatim_batch_size)
+
+        nominatim_rate_limit = os.getenv("NOMINATIM_RATE_LIMIT")
+        if nominatim_rate_limit is not None:
+            self._config["nominatim"]["rate_limit"] = int(nominatim_rate_limit)
+
+        nominatim_timeout = os.getenv("NOMINATIM_TIMEOUT")
+        if nominatim_timeout:
+            self._config["nominatim"]["timeout"] = int(nominatim_timeout)
+
+        nominatim_cache_dir = os.getenv("NOMINATIM_CACHE_DIR")
+        if nominatim_cache_dir:
+            self._config["nominatim"]["cache_dir"] = nominatim_cache_dir
+
+        nominatim_retry_attempts = os.getenv("NOMINATIM_RETRY_ATTEMPTS")
+        if nominatim_retry_attempts:
+            self._config["nominatim"]["retry_attempts"] = int(nominatim_retry_attempts)
+
+        nominatim_min_quality = os.getenv("NOMINATIM_MIN_QUALITY")
+        if nominatim_min_quality:
+            self._config["nominatim"]["min_quality"] = nominatim_min_quality
+
+        nominatim_similarity = os.getenv("NOMINATIM_SIMILARITY_THRESHOLD")
+        if nominatim_similarity:
+            self._config["nominatim"]["similarity_threshold"] = float(nominatim_similarity)
+
+        # Geocoding PostGIS setting
+        geocoding_use_postgis = os.getenv("GEOCODING_USE_POSTGIS")
+        if geocoding_use_postgis is not None:
+            self._config["geocoding"]["use_postgis"] = geocoding_use_postgis.lower() == "true"
 
     def _create_directories(self) -> None:
         """Create required directories if they don't exist."""

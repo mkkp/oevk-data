@@ -1,16 +1,16 @@
 -- Database Schema for OEVK Data Transformation
--- All primary keys are xxhash64 digests stored as lowercase hexadecimal strings
+-- All primary keys are MD5 digests (first 16 characters) stored as lowercase hexadecimal strings
 
 -- County table
 CREATE TABLE IF NOT EXISTS County (
-    ID TEXT PRIMARY KEY, -- xxhash64(CountyCode)
+    ID TEXT PRIMARY KEY, -- md5(CountyCode)
     CountyCode TEXT UNIQUE NOT NULL,
     CountyName TEXT NOT NULL
 );
 
 -- Settlement table
 CREATE TABLE IF NOT EXISTS Settlement (
-    ID TEXT PRIMARY KEY, -- xxhash64(CountyCode|SettlementCode)
+    ID TEXT PRIMARY KEY, -- md5(CountyCode|SettlementCode)
     SettlementCode TEXT NOT NULL,
     SettlementName TEXT NOT NULL,
     County_ID TEXT NOT NULL,
@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS Settlement (
 
 -- NationalIndividualElectoralDistrict (OEVK) table
 CREATE TABLE IF NOT EXISTS NationalIndividualElectoralDistrict (
-    ID TEXT PRIMARY KEY, -- xxhash64(CountyCode|OEVK)
+    ID TEXT PRIMARY KEY, -- md5(CountyCode|OEVK)
     OEVK TEXT NOT NULL,
     Name TEXT NOT NULL,
     Center TEXT, -- Center point coordinates (space-separated: "lat lon")
@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS NationalIndividualElectoralDistrict (
 
 -- SettlementIndividualElectoralDistrict (TEVK) table
 CREATE TABLE IF NOT EXISTS SettlementIndividualElectoralDistrict (
-    ID TEXT PRIMARY KEY, -- xxhash64(CountyCode|SettlementCode|TEVK)
+    ID TEXT PRIMARY KEY, -- md5(CountyCode|SettlementCode|TEVK)
     TEVK TEXT,
     Name TEXT NOT NULL,
     County_ID TEXT NOT NULL,
@@ -44,13 +44,13 @@ CREATE TABLE IF NOT EXISTS SettlementIndividualElectoralDistrict (
 
 -- PostalCode table
 CREATE TABLE IF NOT EXISTS PostalCode (
-    ID TEXT PRIMARY KEY, -- xxhash64(PostalCode)
+    ID TEXT PRIMARY KEY, -- md5(PostalCode)
     PostalCode TEXT UNIQUE NOT NULL
 );
 
 -- PostalCode_Settlement junction table
 CREATE TABLE IF NOT EXISTS PostalCode_Settlement (
-    ID TEXT PRIMARY KEY, -- xxhash64(PostalCode_ID|Settlement_ID)
+    ID TEXT PRIMARY KEY, -- md5(PostalCode_ID|Settlement_ID)
     PostalCode_ID TEXT NOT NULL,
     Settlement_ID TEXT NOT NULL,
     FOREIGN KEY (PostalCode_ID) REFERENCES PostalCode(ID),
@@ -60,12 +60,18 @@ CREATE TABLE IF NOT EXISTS PostalCode_Settlement (
 
 -- PollingStation table
 CREATE TABLE IF NOT EXISTS PollingStation (
-    ID TEXT PRIMARY KEY, -- xxhash64(CountyCode|SettlementCode|OEVK|TEVK|PollingStationAddress)
+    ID TEXT PRIMARY KEY, -- md5(CountyCode|SettlementCode|OEVK|TEVK|PollingStationAddress)
     PollingStationAddress TEXT NOT NULL,
     SettlementIndividualElectoralDistrict_ID TEXT NOT NULL,
     County_ID TEXT NOT NULL,
     Settlement_ID TEXT NOT NULL,
     NationalIndividualElectoralDistrict_ID TEXT NOT NULL,
+    Latitude REAL,
+    Longitude REAL,
+    GeocodingQuality TEXT,
+    GeocodingSource TEXT,
+    GeocodedAt TIMESTAMP,
+    MatchedAddress TEXT,
     FOREIGN KEY (SettlementIndividualElectoralDistrict_ID) REFERENCES SettlementIndividualElectoralDistrict(ID),
     FOREIGN KEY (County_ID) REFERENCES County(ID),
     FOREIGN KEY (Settlement_ID) REFERENCES Settlement(ID),
@@ -73,9 +79,12 @@ CREATE TABLE IF NOT EXISTS PollingStation (
     UNIQUE (County_ID, Settlement_ID, NationalIndividualElectoralDistrict_ID, SettlementIndividualElectoralDistrict_ID, PollingStationAddress)
 );
 
+CREATE INDEX IF NOT EXISTS idx_PollingStation_Coordinates ON PollingStation(Latitude, Longitude);
+CREATE INDEX IF NOT EXISTS idx_PollingStation_Quality ON PollingStation(GeocodingQuality);
+
 -- Address table
 CREATE TABLE IF NOT EXISTS Address (
-    ID TEXT PRIMARY KEY, -- xxhash64(...) based on full address components
+    ID TEXT PRIMARY KEY, -- md5(...) based on full address components
     Sequence INTEGER NOT NULL,
     OriginalOrder INTEGER NOT NULL,
     FullAddress TEXT NOT NULL,
@@ -100,19 +109,19 @@ CREATE TABLE IF NOT EXISTS Address (
 
 -- PublicSpaceType table
 CREATE TABLE IF NOT EXISTS PublicSpaceType (
-    ID TEXT PRIMARY KEY, -- xxhash64(PublicSpaceType)
+    ID TEXT PRIMARY KEY, -- md5(PublicSpaceType)
     PublicSpaceType TEXT UNIQUE NOT NULL
 );
 
 -- PublicSpaceName table
 CREATE TABLE IF NOT EXISTS PublicSpaceName (
-    ID TEXT PRIMARY KEY, -- xxhash64(PublicSpaceName)
+    ID TEXT PRIMARY KEY, -- md5(PublicSpaceName)
     PublicSpaceName TEXT UNIQUE NOT NULL
 );
 
 -- SettlementPublicSpaces junction table
 CREATE TABLE IF NOT EXISTS SettlementPublicSpaces (
-    ID TEXT PRIMARY KEY, -- xxhash64(Settlement_ID|PublicSpaceName_ID|PublicSpaceType_ID)
+    ID TEXT PRIMARY KEY, -- md5(Settlement_ID|PublicSpaceName_ID|PublicSpaceType_ID)
     Settlement_ID TEXT NOT NULL,
     PublicSpaceName_ID TEXT NOT NULL,
     PublicSpaceType_ID TEXT NOT NULL,
@@ -124,7 +133,7 @@ CREATE TABLE IF NOT EXISTS SettlementPublicSpaces (
 
 -- Update Address table to use foreign keys instead of text fields
 CREATE TABLE IF NOT EXISTS Address_new (
-    ID TEXT PRIMARY KEY, -- xxhash64(...) based on full address components
+    ID TEXT PRIMARY KEY, -- md5(...) based on full address components
     Sequence INTEGER NOT NULL,
     OriginalOrder INTEGER NOT NULL,
     FullAddress TEXT NOT NULL,
@@ -168,20 +177,30 @@ CREATE INDEX IF NOT EXISTS idx_Address_Settlement_ID ON Address(Settlement_ID);
 -- Deduplication tables
 -- CanonicalAddress table for deduplicated addresses
 CREATE TABLE IF NOT EXISTS CanonicalAddress (
-    ID TEXT PRIMARY KEY, -- xxhash64(CountyCode|SettlementName|FullAddress)
+    ID TEXT PRIMARY KEY, -- md5(CountyCode|SettlementName|FullAddress)
     CountyCode TEXT NOT NULL,
     SettlementName TEXT NOT NULL,
     StreetName TEXT NOT NULL,
     HouseNumber TEXT NOT NULL,
+    Building TEXT,
+    Staircase TEXT,
     FullAddress TEXT NOT NULL, -- Formatted Hungarian address (e.g., "Körtöltés utca 1/D.")
     AccessibilityFlag TEXT,
+    Latitude REAL,
+    Longitude REAL,
+    GeocodingQuality TEXT,
+    GeocodingSource TEXT,
+    GeocodedAt TIMESTAMP,
     CreatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (CountyCode, SettlementName, FullAddress)
 );
 
+CREATE INDEX IF NOT EXISTS idx_CanonicalAddress_Coordinates ON CanonicalAddress(Latitude, Longitude);
+CREATE INDEX IF NOT EXISTS idx_CanonicalAddress_Quality ON CanonicalAddress(GeocodingQuality);
+
 -- AddressMapping table to track original to canonical address relationships
 CREATE TABLE IF NOT EXISTS AddressMapping (
-    ID TEXT PRIMARY KEY, -- xxhash64(OriginalAddressID|CanonicalAddressID)
+    ID TEXT PRIMARY KEY, -- md5(OriginalAddressID|CanonicalAddressID)
     OriginalAddressID TEXT NOT NULL,
     CanonicalAddressID TEXT NOT NULL,
     MappingType TEXT DEFAULT 'deduplication', -- deduplication, manual_override, etc.
@@ -192,7 +211,7 @@ CREATE TABLE IF NOT EXISTS AddressMapping (
 
 -- AddressPollingStations table to preserve polling station assignments
 CREATE TABLE IF NOT EXISTS AddressPollingStations (
-    ID TEXT PRIMARY KEY, -- xxhash64(CanonicalAddressID|PollingStationID)
+    ID TEXT PRIMARY KEY, -- md5(CanonicalAddressID|PollingStationID)
     CanonicalAddressID TEXT NOT NULL,
     PollingStationID TEXT NOT NULL,
     CreatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -203,7 +222,7 @@ CREATE TABLE IF NOT EXISTS AddressPollingStations (
 
 -- AddressPIRCodes table to preserve PIR code relationships
 CREATE TABLE IF NOT EXISTS AddressPIRCodes (
-    ID TEXT PRIMARY KEY, -- xxhash64(CanonicalAddressID|PIRCode)
+    ID TEXT PRIMARY KEY, -- md5(CanonicalAddressID|PIRCode)
     CanonicalAddressID TEXT NOT NULL,
     PIRCode TEXT NOT NULL,
     CreatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -213,7 +232,7 @@ CREATE TABLE IF NOT EXISTS AddressPIRCodes (
 
 -- DeduplicationReport table for audit and verification
 CREATE TABLE IF NOT EXISTS DeduplicationReport (
-    ID TEXT PRIMARY KEY, -- xxhash64(RunID)
+    ID TEXT PRIMARY KEY, -- md5(RunID)
     RunID TEXT NOT NULL,
     TotalAddresses INTEGER NOT NULL,
     DuplicatesFound INTEGER NOT NULL,

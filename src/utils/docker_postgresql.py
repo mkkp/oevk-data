@@ -2,6 +2,8 @@
 
 import subprocess
 import time
+import platform as platform_module
+import socket
 from typing import Optional, Dict
 
 from src.utils.pipeline_logging import get_logger
@@ -15,25 +17,28 @@ class DockerPostgreSQLManager:
     def __init__(
         self,
         container_name: str = "oevk-verify",
-        port: int = 5432,
+        port: Optional[int] = None,
         database: str = "oevk",
         user: str = "oevk",
         password: str = "oevk",
+        use_postgis: bool = True,
     ):
         """Initialize Docker PostgreSQL manager.
 
         Args:
             container_name: Name for the Docker container
-            port: PostgreSQL port (default: 5432)
+            port: PostgreSQL port (default: auto-find available port)
             database: Database name (default: oevk)
             user: PostgreSQL user (default: oevk)
             password: PostgreSQL password (default: oevk)
+            use_postgis: Use PostGIS image instead of standard PostgreSQL (default: True)
         """
         self.container_name = container_name
-        self.port = port
+        self.port = port if port is not None else self._find_available_port()
         self.database = database
         self.user = user
         self.password = password
+        self.use_postgis = use_postgis
 
     def create_container(self) -> str:
         """Create and start a PostgreSQL Docker container.
@@ -50,27 +55,36 @@ class DockerPostgreSQLManager:
             logger.info(f"Container '{self.container_name}' already exists, removing...")
             self.stop_and_remove_container()
 
-        logger.info(f"Creating PostgreSQL container '{self.container_name}'...")
+        # Choose Docker image based on PostGIS configuration
+        # Use PostGIS 15-3.3 which has multi-arch support (amd64/arm64)
+        if self.use_postgis:
+            postgres_image = "postgis/postgis:15-3.3"
+        else:
+            postgres_image = "postgres:16"
+
+        logger.info(f"Creating PostgreSQL container '{self.container_name}' (image: {postgres_image}, port: {self.port})...")
 
         try:
-            # Create and start container
+            # Create and start container (Docker will auto-select correct architecture)
+            docker_cmd = [
+                "docker",
+                "run",
+                "--name",
+                self.container_name,
+                "-e",
+                f"POSTGRES_DB={self.database}",
+                "-e",
+                f"POSTGRES_USER={self.user}",
+                "-e",
+                f"POSTGRES_PASSWORD={self.password}",
+                "-p",
+                f"{self.port}:5432",
+                "-d",  # Detached mode
+                postgres_image,
+            ]
+
             result = subprocess.run(
-                [
-                    "docker",
-                    "run",
-                    "--name",
-                    self.container_name,
-                    "-e",
-                    f"POSTGRES_DB={self.database}",
-                    "-e",
-                    f"POSTGRES_USER={self.user}",
-                    "-e",
-                    f"POSTGRES_PASSWORD={self.password}",
-                    "-p",
-                    f"{self.port}:5432",
-                    "-d",  # Detached mode
-                    "postgres:16-alpine",
-                ],
+                docker_cmd,
                 capture_output=True,
                 text=True,
                 check=True,
@@ -231,3 +245,29 @@ class DockerPostgreSQLManager:
 
         except (subprocess.SubprocessError, subprocess.TimeoutExpired):
             return None
+
+    def _find_available_port(self, start_port: int = 5433, max_attempts: int = 100) -> int:
+        """Find an available port for PostgreSQL.
+
+        Args:
+            start_port: Port to start searching from (default: 5433 to avoid conflict with default 5432)
+            max_attempts: Maximum number of ports to try
+
+        Returns:
+            Available port number
+
+        Raises:
+            RuntimeError: If no available port found
+        """
+        for port in range(start_port, start_port + max_attempts):
+            try:
+                # Try to bind to the port to check if it's available
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.bind(("", port))
+                    logger.debug(f"Found available port: {port}")
+                    return port
+            except OSError:
+                # Port is in use, try next one
+                continue
+
+        raise RuntimeError(f"No available port found in range {start_port}-{start_port + max_attempts}")

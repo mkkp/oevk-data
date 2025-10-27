@@ -2,3 +2,5 @@ test_*.csv
 Addresses
 /export_manifest.json
 /data.sql
+/import_postgresql.sql
+/import_postgresql_docker.sql

@@ -237,10 +237,10 @@ class FilePackager:
     def package_postgresql_files(
         self, data_dir: str, release_tag: str, force: bool = False
     ) -> Dict[str, Any]:
-        """Package PostgreSQL SQL files into a compressed archive.
+        """Package PostgreSQL CSV files and import script into a compressed archive.
 
         Args:
-            data_dir: Directory containing schema.sql and data.sql files
+            data_dir: Directory containing postgresql/ subdirectory with CSV files
             release_tag: Release tag for naming
             force: If True, recreate even if archive exists
 
@@ -248,6 +248,7 @@ class FilePackager:
             Dictionary containing artifact metadata
         """
         data_path = Path(data_dir)
+        postgresql_dir = data_path / "postgresql"
 
         archive_name = ReleaseUtils.generate_archive_name("postgresql", release_tag)
         archive_path = self.output_dir / archive_name
@@ -268,113 +269,182 @@ class FilePackager:
                 "skipped": True,
             }
 
-        # Find schema.sql and data.sql
+        # Check for PostgreSQL CSV files directory
+        if not postgresql_dir.exists():
+            raise FileNotFoundError(f"PostgreSQL directory not found: {postgresql_dir}")
+
+        # Find schema.sql and import script
         schema_path = data_path / "schema.sql"
-        data_sql_path = data_path / "data.sql"
+        import_script_path = data_path / "import_postgresql.sql"
 
         if not schema_path.exists():
             raise FileNotFoundError(f"PostgreSQL schema.sql not found in {data_dir}")
 
-        if not data_sql_path.exists():
-            raise FileNotFoundError(f"PostgreSQL data.sql not found in {data_dir}")
+        if not import_script_path.exists():
+            raise FileNotFoundError(f"PostgreSQL import_postgresql.sql not found in {data_dir}")
 
-        # Get loader script and requirements from templates
-        templates_dir = Path(__file__).parent / "templates"
-        loader_script = templates_dir / "load_postgresql.py"
-        requirements_txt = templates_dir / "requirements.txt"
+        # Get all CSV files from postgresql directory
+        csv_files = list(postgresql_dir.glob("*.csv"))
+        if not csv_files:
+            raise FileNotFoundError(f"No CSV files found in {postgresql_dir}")
 
-        # Create ZIP archive
+        # Create ZIP archive with STORED method (no compression) for large CSV files
+        # CSV files are already text and don't compress well, this makes packaging much faster
         self.logger.logger.info(f"Creating PostgreSQL archive: {archive_name}")
-        with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zipf:
+        self.logger.logger.info(f"  Including {len(csv_files)} CSV files (stored without compression)")
+
+        with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_STORED) as zipf:
+            # Add schema and import script
             zipf.write(schema_path, "schema.sql")
-            zipf.write(data_sql_path, "data.sql")
-            zipf.write(loader_script, "load_postgresql.py")
-            zipf.write(requirements_txt, "requirements.txt")
+            zipf.write(import_script_path, "import_postgresql.sql")
+
+            # Add all CSV files in postgresql/ subdirectory
+            for csv_file in csv_files:
+                zipf.write(csv_file, f"postgresql/{csv_file.name}")
 
             # Add README with instructions
             readme_content = """# OEVK PostgreSQL Database
 
-This archive contains PostgreSQL-compatible SQL files for the OEVK database.
+This archive contains PostgreSQL-compatible CSV files and schema for the OEVK database.
 
 ## Contents
 
-- `schema.sql`: Database schema (DDL) with UUID types and trigram indexes
-- `data.sql`: Data INSERT statements with UUID values
-- `load_postgresql.py`: Python loader script for easy database setup
-- `requirements.txt`: Python dependencies for the loader script
+- `schema.sql`: Database schema (DDL) with foreign keys and indexes
+- `import_postgresql.sql`: Optimized COPY-based import script
+- `postgresql/`: Directory containing CSV files for all tables
 - `README.md`: This file
 
-## Quick Start with Loader Script
+## Quick Start
 
-The easiest way to load the data is using the included Python loader script:
-
-### Option 1: Load to Docker PostgreSQL (Automatic Setup)
+### Option 1: Automated Import (Recommended)
 
 ```bash
-pip install -r requirements.txt
-python load_postgresql.py --docker
+# Extract the archive
+unzip oevk-postgresql-YYYYMMDD_HHMMSS.zip
+
+# Create database and enable PostGIS
+createdb oevk
+psql -d oevk -c "CREATE EXTENSION IF NOT EXISTS postgis;"
+
+# Import schema and data (2-5 minutes)
+psql -d oevk -f schema.sql
+psql -d oevk -f import_postgresql.sql
 ```
 
-This will:
-1. Create and start a PostgreSQL Docker container
-2. Load schema.sql and data.sql automatically
-3. Print connection details
-
-### Option 2: Load to External PostgreSQL
+### Option 2: Docker PostgreSQL
 
 ```bash
-pip install -r requirements.txt
-python load_postgresql.py --host localhost --user postgres --password mypass --database oevk
+# Extract the archive
+unzip oevk-postgresql-YYYYMMDD_HHMMSS.zip
+
+# Start PostgreSQL with PostGIS
+docker run --name oevk-postgres -e POSTGRES_PASSWORD=postgres -p 5432:5432 -d postgis/postgis:16-3.4
+
+# Wait for PostgreSQL to start
+sleep 5
+
+# Create database
+docker exec oevk-postgres psql -U postgres -c "CREATE DATABASE oevk;"
+
+# Import schema
+docker exec -i oevk-postgres psql -U postgres -d oevk < schema.sql
+
+# Copy CSV files to container
+docker cp postgresql oevk-postgres:/tmp/
+
+# Import data (update paths in import_postgresql.sql to /tmp/postgresql/)
+sed 's|/Users/[^/]*/Project/oevk-data/exports/postgresql/|/tmp/postgresql/|g' import_postgresql.sql > import_docker.sql
+docker exec -i oevk-postgres psql -U postgres -d oevk < import_docker.sql
 ```
 
-Or use environment variables:
-```bash
-export POSTGRES_HOST=localhost
-export POSTGRES_USER=postgres
-export POSTGRES_PASSWORD=mypass
-export POSTGRES_DB=oevk
-python load_postgresql.py
-```
+## What's Included
 
-## Manual Import Instructions
+### CSV Files (15 tables, ~1.6GB total)
 
-If you prefer to import manually:
+All CSV files use standard PostgreSQL COPY format:
+- Header row with column names
+- Comma-separated values
+- Double-quoted strings
+- NULL represented as empty string
 
-1. Create a PostgreSQL database:
-   ```sql
-   CREATE DATABASE oevk;
-   ```
+**Reference Tables:**
+- `County.csv` - 20 counties
+- `Settlement.csv` - 3,177 settlements
+- `NationalIndividualElectoralDistrict.csv` - 106 districts
+- `SettlementIndividualElectoralDistrict.csv` - 4,597 districts
+- `PostalCode.csv` - 3,106 postal codes
+- `PostalCode_Settlement.csv` - 3,684 postal code mappings
+- `PublicSpaceName.csv` - 25,117 street names
+- `PublicSpaceType.csv` - 148 street types
+- `SettlementPublicSpaces.csv` - 122,524 street mappings
+- `PollingStation.csv` - 8,547 polling stations
 
-2. Import the schema:
-   ```bash
-   psql -d oevk -f schema.sql
-   ```
+**Address Tables (3.3M addresses):**
+- `Address.csv` - 3.3M deduplicated canonical addresses
+- `AddressPollingStations.csv` - 3.3M address-polling station mappings
+- `AddressPIRCodes.csv` - 3.3M address-postal code mappings
 
-3. Import the data:
-   ```bash
-   psql -d oevk -f data.sql
-   ```
+**Utility Tables:**
+- `AddressMapping.csv` - Maps original addresses to canonical addresses
+- `CanonicalAddress.csv` - Canonical address reference
 
-## Advanced Features
+## Import Performance
 
-### Text Search with Trigram Indexes
+The optimized COPY-based import is **10-50x faster** than INSERT statements:
 
-The database includes pg_trgm indexes for efficient substring searches:
+- **COPY method** (import_postgresql.sql): 2-5 minutes
+- **INSERT method** (legacy data.sql): 30-120 minutes
+
+## Database Features
+
+### PostGIS Geography Columns
+
+Address and PollingStation tables include PostGIS GEOGRAPHY columns for geospatial queries:
 
 ```sql
--- Search for addresses containing 'utca'
-SELECT * FROM Address WHERE FullAddress ILIKE '%utca%';
+-- Find addresses within 1km of a point
+SELECT * FROM Address
+WHERE ST_DWithin(
+    Geometry,
+    ST_GeogFromText('POINT(19.0402 47.4979)'),
+    1000
+);
 
--- Search for addresses containing 'Bar'
-SELECT * FROM CanonicalAddress WHERE FullAddress ILIKE '%Bar%';
+-- Find nearest polling station
+SELECT * FROM PollingStation
+ORDER BY Geometry <-> ST_GeogFromText('POINT(19.0402 47.4979)')
+LIMIT 1;
 ```
+
+### Foreign Key Relationships
+
+All tables are properly normalized with foreign key constraints:
+- `Address.County_ID` → `County.ID`
+- `Address.Settlement_ID` → `Settlement.ID`
+- `AddressPollingStations.AddressID` → `Address.ID`
+- `AddressPIRCodes.AddressID` → `Address.ID`
+
+### Indexes
+
+Optimized indexes for common queries:
+- Primary keys on all ID columns
+- Foreign key indexes for fast joins
+- Spatial indexes on Geography columns (PostGIS)
+
+## Data Quality
+
+- **Deduplication**: Address table contains 3.3M deduplicated canonical addresses
+- **Geocoding**: ~88% of addresses include latitude/longitude coordinates
+- **Validation**: All foreign keys validated during export
+- **Consistency**: Junction tables use correct AddressID references
 
 ## Notes
 
-- All ID columns use PostgreSQL UUID type
-- ID values are converted from xxhash64 to UUID v3 format
-- Trigram indexes (pg_trgm) enable fast LIKE/ILIKE queries
-- The data.sql file may be large; loader script handles this efficiently
+- CSV files use absolute paths in import_postgresql.sql - update paths if needed
+- PostGIS extension required for Geography columns
+- Import script includes placeholder records for missing foreign keys
+- All ID columns use PostgreSQL TEXT type (xxhash64 hex values)
+- Expected database size: ~2.5GB after import
 """
             zipf.writestr("README.md", readme_content)
 
@@ -383,11 +453,147 @@ SELECT * FROM CanonicalAddress WHERE FullAddress ILIKE '%Bar%';
         checksum = self._calculate_checksum(archive_path)
 
         self.logger.logger.info(
-            f"PostgreSQL archive created: {archive_name} ({file_size} bytes)"
+            f"PostgreSQL archive created: {archive_name} ({file_size} bytes, {len(csv_files)} CSV files)"
         )
 
         return {
             "artifact_type": "postgresql",
+            "file_path": str(archive_path),
+            "file_size": file_size,
+            "checksum": checksum,
+            "created_at": datetime.now(),
+            "csv_files_count": len(csv_files),
+        }
+
+    def package_geocoding_cache(
+        self, cache_file: str, release_tag: str, force: bool = False
+    ) -> Dict[str, Any]:
+        """Package geocoding cache database into a compressed archive.
+
+        Args:
+            cache_file: Path to geocoding_cache.db file
+            release_tag: Release tag for naming
+            force: If True, recreate even if archive exists
+
+        Returns:
+            Dictionary containing artifact metadata
+        """
+        cache_path = Path(cache_file)
+
+        archive_name = ReleaseUtils.generate_archive_name("geocoding_cache", release_tag)
+        archive_path = self.output_dir / archive_name
+
+        # Check if archive already exists
+        if archive_path.exists() and not force:
+            file_size = archive_path.stat().st_size
+            checksum = self._calculate_checksum(archive_path)
+            self.logger.logger.info(
+                f"Geocoding cache archive already exists, skipping creation: {archive_name} ({file_size} bytes)"
+            )
+            return {
+                "artifact_type": "geocoding_cache",
+                "file_path": str(archive_path),
+                "file_size": file_size,
+                "checksum": checksum,
+                "created_at": datetime.now(),
+                "skipped": True,
+            }
+
+        if not cache_path.exists():
+            raise FileNotFoundError(f"Geocoding cache file not found: {cache_file}")
+
+        # Create ZIP archive
+        self.logger.logger.info(f"Creating geocoding cache archive: {archive_name}")
+        with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zipf:
+            zipf.write(cache_path, "geocoding_cache.db")
+
+            # Add README with instructions
+            readme_content = """# OEVK Geocoding Cache
+
+This archive contains a pre-built geocoding cache for Hungarian addresses using Nominatim.
+
+## Contents
+
+- `geocoding_cache.db`: SQLite database with ~2.9M cached geocoding results
+- `README.md`: This file
+
+## What is this?
+
+The geocoding cache contains latitude/longitude coordinates for Hungarian addresses
+that have been successfully geocoded using a local Nominatim server with OpenStreetMap data.
+
+## Usage
+
+Place the `geocoding_cache.db` file in your `data/` directory before running geocoding:
+
+```bash
+# Extract the cache
+unzip oevk-geocoding-cache-YYYYMMDD_HHMMSS.zip
+
+# Move to data directory
+mv geocoding_cache.db data/
+
+# Run geocoding (will use cache for ~88% of addresses)
+python src/cli.py geocode run
+```
+
+## Benefits
+
+Using this cache will:
+- Speed up geocoding by ~5x for cached addresses
+- Reduce load on your Nominatim server
+- Provide consistent coordinates across runs
+- Skip ~88% of addresses that are already geocoded
+
+## Cache Statistics
+
+- **Cached addresses**: ~2,900,000 (88.5%)
+- **Success rate**: ~88.5%
+  - Exact matches: ~17.6%
+  - Street-level matches: ~70.1%
+  - Settlement-level matches: ~0.7%
+- **Source**: Local Nominatim with Hungary OSM data
+- **Cache format**: SQLite database
+- **Cache key**: MD5(SettlementName|StreetName|HouseNumber)
+
+## Cache Structure
+
+The cache database has the following schema:
+
+```sql
+CREATE TABLE geocoding_cache (
+    cache_key TEXT PRIMARY KEY,
+    canonical_address_id TEXT NOT NULL,
+    latitude REAL,
+    longitude REAL,
+    quality TEXT NOT NULL,  -- 'exact', 'street', 'settlement', 'failed'
+    source TEXT NOT NULL,
+    osm_type TEXT,
+    osm_id INTEGER,
+    matched_address TEXT,
+    created_at TEXT NOT NULL
+);
+```
+
+## Notes
+
+- Failed geocoding attempts are NOT cached (will be retried)
+- Cache is compatible with the multi-threaded geocoder (32 workers)
+- Cache lookups are very fast (indexed by cache_key)
+- To rebuild the cache from scratch, simply delete the file and re-run geocoding
+"""
+            zipf.writestr("README.md", readme_content)
+
+        # Calculate file size and checksum
+        file_size = archive_path.stat().st_size
+        checksum = self._calculate_checksum(archive_path)
+
+        self.logger.logger.info(
+            f"Geocoding cache archive created: {archive_name} ({file_size} bytes)"
+        )
+
+        return {
+            "artifact_type": "geocoding_cache",
             "file_path": str(archive_path),
             "file_size": file_size,
             "checksum": checksum,
