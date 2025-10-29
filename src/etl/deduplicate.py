@@ -630,14 +630,46 @@ class AddressDeduplicator:
                 staircase or "",
             )
 
-        # Clean house_number column (strip leading zeros)
+        # Clean house_number, building, and staircase columns (strip leading zeros)
         def clean_house_number_udf(house_num: str) -> str:
             return self._clean_house_number(house_num or "")
 
+        def clean_building_udf(building: str) -> str:
+            """Clean building by stripping leading zeros from numeric buildings."""
+            building_raw = (building or "").strip()
+            if not building_raw:
+                return ""
+            # Only strip leading zeros if it's purely numeric
+            if building_raw.isdigit():
+                cleaned = building_raw.lstrip("0")
+                return cleaned if cleaned else ""
+            # Keep non-numeric building identifiers as-is (uppercase)
+            return building_raw.upper()
+
+        def clean_staircase_udf(staircase: str) -> str:
+            """Clean staircase by stripping leading zeros from numeric staircases."""
+            staircase_raw = (staircase or "").strip()
+            if not staircase_raw:
+                return ""
+            # Only strip leading zeros if it's purely numeric
+            if staircase_raw.isdigit():
+                cleaned = staircase_raw.lstrip("0")
+                return cleaned if cleaned else ""
+            # Keep non-numeric staircase identifiers as-is (uppercase)
+            return staircase_raw.upper()
+
         formatted_df = addresses_df.with_columns(
-            pl.col("house_number")
-            .map_elements(clean_house_number_udf, return_dtype=pl.Utf8)
-            .alias("house_number")
+            [
+                pl.col("house_number")
+                .map_elements(clean_house_number_udf, return_dtype=pl.Utf8)
+                .alias("house_number"),
+                pl.col("building")
+                .map_elements(clean_building_udf, return_dtype=pl.Utf8)
+                .alias("building"),
+                pl.col("staircase")
+                .map_elements(clean_staircase_udf, return_dtype=pl.Utf8)
+                .alias("staircase"),
+            ]
         )
 
         # Apply formatting to create full_address column
