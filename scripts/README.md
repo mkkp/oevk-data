@@ -1,3 +1,37 @@
+<!--
+DOCUMENT METADATA
+=================
+Title: Utility Scripts Documentation
+Type: Guide
+Category: Infrastructure
+Status: Active
+Version: 1.0
+Created: 2025-10-29
+Last Updated: 2025-10-29
+Author: System
+
+Related Documents:
+- Dump Loader Fix (DUMP_LOADER_FIX.md)
+- Main README (../README.md - Database Setup section)
+- PostgreSQL Schema (../docs/POSTGRESQL_FINAL_SCHEMA.md)
+
+Related Code:
+- scripts/load_dump_to_docker.py (main dump loader implementation)
+
+Dependencies:
+- Docker
+- PostgreSQL/PostGIS Docker image (postgis/postgis:15-3.3)
+- Python 3.9+
+
+Keywords: scripts, dump-loader, postgresql, docker, utilities, database-setup, automation
+
+Summary:
+Complete documentation for utility scripts in the scripts/ directory. Primary focus on load_dump_to_docker.py which provides one-command database setup from PostgreSQL dump files. Includes features, usage examples, command-line options, troubleshooting guide, and performance metrics. Supports auto-detection of latest dumps, Docker container management, and PostgreSQL optimization.
+
+Audience:
+DevOps engineers, database administrators, developers setting up local databases for development or testing.
+-->
+
 # Utility Scripts
 
 This directory contains standalone utility scripts for managing OEVK data.

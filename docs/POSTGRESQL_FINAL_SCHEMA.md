@@ -1,3 +1,37 @@
+<!--
+DOCUMENT METADATA
+=================
+Title: PostgreSQL Final Schema Structure
+Type: Reference
+Category: Schema
+Status: Active
+Version: 1.1
+Created: 2025-10-28
+Last Updated: 2025-10-29
+Author: System
+
+Related Documents:
+- PostgreSQL Naming Convention (014_POSTGRESQL_NAME_CONVENTION.md)
+- README.md (Database Schema section)
+
+Related Code:
+- src/etl/export.py (lines 580-650: schema generation)
+- src/database/postgresql_import.sql (import script)
+
+Dependencies:
+- PostgreSQL 15+
+- PostGIS 3.3+
+- pg_trgm extension
+
+Keywords: postgresql, schema, database, postgis, final-structure, reference, v014, snake_case
+
+Summary:
+Complete reference documentation for the final PostgreSQL database schema after all import steps (schema creation, CSV import, PostGIS geometry population, FK constraints). Describes 14 tables with 3.3M+ addresses, including table structures, indexes, relationships, and query examples. Represents production-ready database state with snake_case naming convention (v014).
+
+Audience:
+Database administrators, backend developers, data analysts working with the production PostgreSQL database.
+-->
+
 # PostgreSQL Final Schema Structure
 
 **Document Purpose**: This document describes the **final** PostgreSQL database schema **after** all import steps are complete, including:

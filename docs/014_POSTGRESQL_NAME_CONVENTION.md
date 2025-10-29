@@ -1,3 +1,37 @@
+<!--
+DOCUMENT METADATA
+=================
+Title: PostgreSQL Naming Convention and Schema Refinement
+Type: Specification
+Category: Schema
+Status: Implemented
+Version: 1.0
+Created: 2025-10-28
+Last Updated: 2025-10-28
+Author: System
+Change ID: 014
+
+Related Documents:
+- PostgreSQL Final Schema (POSTGRESQL_FINAL_SCHEMA.md)
+- README.md (PostgreSQL Naming Conventions section)
+
+Related Code:
+- src/etl/export.py (lines 580-650: schema generation with snake_case)
+- src/etl/export.py (lines 450-550: FK constraint generation)
+
+Dependencies:
+- PostgreSQL 15+
+- Polars for data processing
+
+Keywords: postgresql, naming-convention, snake_case, foreign-keys, normalization, schema-refinement, v014
+
+Summary:
+Specification for comprehensive PostgreSQL naming convention change from PascalCase to snake_case across all database objects. Adds 8 missing foreign keys to address table, removes redundant text columns, enforces NOT NULL constraints on all FKs, and achieves full 3NF normalization. Implements no-prefix rule for non-FK columns (code/name instead of table_code/table_name).
+
+Audience:
+Developers implementing database schema changes, database administrators, data engineers.
+-->
+
 # Change Specification: PostgreSQL Naming Convention and Schema Refinement
 
 **Change ID**: 014  

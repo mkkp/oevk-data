@@ -1,3 +1,41 @@
+<!--
+DOCUMENT METADATA
+=================
+Title: OEVK Data Transformation Pipeline - Main Documentation
+Type: Guide
+Category: Pipeline
+Status: Active
+Version: 2.0
+Created: 2024-10-01
+Last Updated: 2025-10-29
+Author: Project Team
+
+Related Documents:
+- PostgreSQL Schema (docs/POSTGRESQL_FINAL_SCHEMA.md)
+- Naming Convention (docs/014_POSTGRESQL_NAME_CONVENTION.md)
+- Scripts Documentation (scripts/README.md)
+
+Related Code:
+- src/cli.py (main entry point)
+- src/etl/ (ETL pipeline modules)
+- scripts/load_dump_to_docker.py (database setup)
+
+Dependencies:
+- Python 3.9+
+- DuckDB
+- Polars
+- PostgreSQL 15+ (optional)
+- Docker (optional for database)
+
+Keywords: oevk, etl-pipeline, hungarian-addresses, electoral-data, data-transformation, postgresql, duckdb, geocoding, postgis
+
+Summary:
+Complete documentation for the OEVK Data Transformation Pipeline - a Python-based ETL system processing 3.3M+ Hungarian electoral addresses from authoritative government sources. Handles ingestion, transformation, deduplication, geocoding, and export to multiple formats (DuckDB, PostgreSQL, CSV). Includes public space entity extraction, PostGIS spatial support, automated release workflow, and comprehensive data quality features. Production-ready with 98.6% performance improvement.
+
+Audience:
+Developers, data engineers, database administrators, end users setting up and using the OEVK data pipeline.
+-->
+
 # OEVK Data Transformation Pipeline
 
 A Python-based ETL pipeline for processing Hungarian electoral address data from authoritative sources into normalized, queryable datasets with partitioned exports and public space entity extraction.
