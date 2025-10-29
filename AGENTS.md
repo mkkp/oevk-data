@@ -1,3 +1,35 @@
+<!--
+DOCUMENT METADATA
+=================
+Title: OpenSpec Agent Instructions
+Type: Guide
+Category: AI Configuration
+Status: Active
+Version: 1.0
+Created: 2024-10-01
+Last Updated: 2025-10-29
+Author: Project Team
+
+Related Documents:
+- CLAUDE.md (Claude assistant configuration)
+- README.md
+- All change specifications (docs/00*.md)
+
+Related Code:
+- openspec/ (OpenSpec framework)
+
+Dependencies:
+- OpenSpec framework
+
+Keywords: openspec, agents, ai-workflow, change-management, specifications, proposals, automation
+
+Summary:
+Detailed instructions for AI agents working with OpenSpec framework on this project. Defines workflows for creating proposals, implementing changes, and archiving completed work. Includes file conventions, naming patterns, status tracking, and integration with project documentation structure.
+
+Audience:
+AI assistants (Claude), developers using AI-assisted workflows, project maintainers.
+-->
+
 <!-- OPENSPEC:START -->
 # OpenSpec Instructions
 

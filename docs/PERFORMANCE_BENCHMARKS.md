@@ -1,3 +1,35 @@
+<!--
+DOCUMENT METADATA
+=================
+Title: OEVK Data Processing - Performance Benchmarks
+Type: Analysis
+Category: Performance
+Status: Active
+Version: 1.0
+Created: 2024-10-10
+Last Updated: 2024-10-15
+Author: System
+
+Related Documents:
+- Performance Report (PERFORMANCE_REPORT_20251029.md)
+- Export Optimization (EXPORT_OPTIMIZATION.md)
+
+Related Code:
+- src/etl/transform.py (chunked processing)
+
+Dependencies:
+- DuckDB
+- Polars
+
+Keywords: performance, benchmarks, optimization, chunking, throughput, timing
+
+Summary:
+Performance benchmark analysis for chunked address transformation processing 3.3M records. Documents chunk processing rates (~10K records/20-30s), memory usage patterns, and optimization results showing significant performance improvements through chunked processing strategy.
+
+Audience:
+Performance engineers, developers optimizing ETL pipeline.
+-->
+
 # OEVK Data Processing - Performance Benchmarks
 
 ## Overview
