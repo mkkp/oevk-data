@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import shutil
 import sys
 import uuid
@@ -17,6 +18,45 @@ logger = get_logger(__name__)
 # OEVK namespace UUID for generating UUIDs
 # Using UUID5 (SHA-1 based) for better collision resistance than UUID3 (MD5)
 OEVK_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_DNS, "oevk.hu")
+
+
+def _to_snake_case(name: str) -> str:
+    """Convert PascalCase or camelCase to snake_case.
+
+    Args:
+        name: String in PascalCase or camelCase
+
+    Returns:
+        String in snake_case
+
+    Examples:
+        >>> _to_snake_case("CountyID")
+        'county_id'
+        >>> _to_snake_case("NationalIndividualElectoralDistrict")
+        'national_individual_electoral_district'
+    """
+    # Insert underscore before uppercase letters (except at start)
+    s1 = re.sub("(.)([A-Z][a-z]+)", r"\1_\2", name)
+    # Insert underscore before uppercase letters followed by lowercase
+    s2 = re.sub("([a-z0-9])([A-Z])", r"\1_\2", s1)
+    return s2.lower()
+
+
+# Mapping from DuckDB table names (PascalCase) to PostgreSQL table names (snake_case)
+# These are the actual table names used in PostgreSQL schema and CSV exports
+DUCKDB_TO_POSTGRESQL_TABLE_NAMES = {
+    "NationalIndividualElectoralDistrict": "oevk",
+    "SettlementIndividualElectoralDistrict": "tevk",
+    "PostalCode_Settlement": "postal_code_settlement",
+    "SettlementPublicSpaces": "settlement_public_spaces",
+    "PublicSpaceType": "public_space_type",
+    "PublicSpaceName": "public_space_name",
+    "PostalCode": "postal_code",
+    "PollingStation": "polling_station",
+    "Settlement": "settlement",
+    "County": "county",
+    "Address": "address",  # CanonicalAddress exported as Address
+}
 
 
 def to_uuid3(value):
@@ -103,7 +143,7 @@ def convert_polygon_to_wkt(polygon_text: str | None) -> str | None:
         return None
 
     try:
-        pairs = polygon_text.strip().split(',')
+        pairs = polygon_text.strip().split(",")
         coords = []
 
         for pair in pairs:
@@ -133,7 +173,7 @@ def convert_polygon_to_wkt(polygon_text: str | None) -> str | None:
             coords.append(coords[0])
 
         # Format as WKT: POLYGON((lon1 lat1, lon2 lat2, ...))
-        coord_str = ', '.join(f"{lon} {lat}" for lon, lat in coords)
+        coord_str = ", ".join(f"{lon} {lat}" for lon, lat in coords)
         return f"POLYGON(({coord_str}))"
 
     except (ValueError, IndexError) as e:
@@ -159,16 +199,12 @@ def generate_postgresql_schema():
     with open(schema_path, "r", encoding="utf-8") as f:
         schema = f.read()
 
-    # Convert ID columns from TEXT to UUID
-    # Pattern: ID TEXT PRIMARY KEY -> ID UUID PRIMARY KEY
-    import re
-
     # Replace the DuckDB schema header with PostgreSQL-specific header
     schema = re.sub(
         r"^-- Database Schema for OEVK Data Transformation\n-- All primary keys are MD5 digests[^\n]*\n\n",
         "",
         schema,
-        flags=re.MULTILINE
+        flags=re.MULTILINE,
     )
 
     # Add PostgreSQL header comment and PostGIS extension if enabled
@@ -182,69 +218,258 @@ def generate_postgresql_schema():
 
     schema = pg_header + schema
 
+    # ========================================
+    # PostgreSQL Naming Convention Transformations
+    # ========================================
+    # Apply snake_case naming for tables and columns as per project.md conventions
+
+    # 1. Convert table names to snake_case with special abbreviations
+    # NOTE: Order matters! More specific names (CanonicalAddress) before generic (Address)
+    table_mappings = {
+        "NationalIndividualElectoralDistrict": "oevk",
+        "SettlementIndividualElectoralDistrict": "tevk",
+        "PostalCode_Settlement": "postal_code_settlement",
+        "SettlementPublicSpaces": "settlement_public_spaces",
+        "PublicSpaceType": "public_space_type",
+        "PublicSpaceName": "public_space_name",
+        "PostalCode": "postal_code",
+        "PollingStation": "polling_station",
+        "Settlement": "settlement",
+        "County": "county",
+        "CanonicalAddress": "address",  # Must come before "Address"
+        "Address": "address",  # Catch any remaining Address references
+        "AddressPollingStations": "address_polling_stations",
+        "AddressPIRCodes": "address_pir_codes",
+        "AddressMapping": "address_mapping",
+        "staging_oevk_json": "staging_oevk_json",  # already snake_case
+    }
+
+    # Apply table name transformations
+    for old_name, new_name in table_mappings.items():
+        # Table definitions: CREATE TABLE IF NOT EXISTS OldName
+        schema = re.sub(
+            rf"\bCREATE TABLE IF NOT EXISTS {old_name}\b",
+            f"CREATE TABLE IF NOT EXISTS {new_name}",
+            schema,
+        )
+        # References: REFERENCES OldName(ID)
+        schema = re.sub(
+            rf"\bREFERENCES {old_name}\(", f"REFERENCES {new_name}(", schema
+        )
+        # Index/table names in various contexts
+        schema = re.sub(rf"\bON {old_name}\(", f"ON {new_name}(", schema)
+        schema = re.sub(rf"\bFROM {old_name}\b", f"FROM {new_name}", schema)
+        schema = re.sub(
+            rf"\bALTER TABLE {old_name}\b", f"ALTER TABLE {new_name}", schema
+        )
+        # Comments: -- OldName table -> -- new_name table
+        schema = re.sub(rf"-- {old_name} table\b", f"-- {new_name} table", schema)
+
+    # Additional comment fixes for specific patterns
+    schema = re.sub(
+        r"-- Update Address table to use foreign keys",
+        "-- Update address table to use foreign keys",
+        schema,
+    )
+
+    # 2. Convert column names to snake_case
+    column_mappings = {
+        # Generic ID columns
+        r"\bID\b": "id",
+        # Foreign key columns with special abbreviations
+        r"\bNationalIndividualElectoralDistrict_ID\b": "oevk_id",
+        r"\bSettlementIndividualElectoralDistrict_ID\b": "tevk_id",
+        # Standard foreign key columns
+        r"\bCounty_ID\b": "county_id",
+        r"\bSettlement_ID\b": "settlement_id",
+        r"\bPublicSpaceName_ID\b": "public_space_name_id",
+        r"\bPublicSpaceType_ID\b": "public_space_type_id",
+        r"\bPostalCode_ID\b": "postal_code_id",
+        r"\bPollingStation_ID\b": "polling_station_id",
+        r"\bCanonicalAddressID\b": "address_id",
+        r"\bPollingStationID\b": "polling_station_id",
+        r"\bOriginalAddressID\b": "original_address_id",
+        # Regular columns
+        r"\bCountyCode\b": "county_code",
+        r"\bCountyName\b": "county_name",
+        r"\bSettlementCode\b": "settlement_code",
+        r"\bSettlementName\b": "settlement_name",
+        r"\bOEVK\b": "oevk",
+        r"\bTEVK\b": "tevk",
+        r"\bName\b": "name",
+        r"\bCenter\b": "center",
+        r"\bPolygon\b": "polygon",
+        r"\bPostalCode\b": "postal_code",
+        r"\bPollingStationAddress\b": "polling_station_address",
+        r"\bLatitude\b": "latitude",
+        r"\bLongitude\b": "longitude",
+        r"\bGeocodingQuality\b": "geocoding_quality",
+        r"\bGeocodingSource\b": "geocoding_source",
+        r"\bGeocodedAt\b": "geocoded_at",
+        r"\bMatchedAddress\b": "matched_address",
+        r"\bPublicSpaceType\b": "public_space_type",
+        r"\bPublicSpaceName\b": "public_space_name",
+        r"\bHouseNumber\b": "house_number",
+        r"\bBuilding\b": "building",
+        r"\bStaircase\b": "staircase",
+        r"\bFullAddress\b": "full_address",
+        r"\bAccessibilityFlag\b": "accessibility_flag",
+        r"\bCreatedAt\b": "created_at",
+        r"\bGeometry\b": "geometry",
+        r"\bMappingType\b": "mapping_type",
+        r"\bPIRCode\b": "pir_code",
+        r"\bSequence\b": "sequence",
+        r"\bOriginalOrder\b": "original_order",
+        r"\bOriginalAddressCount\b": "original_address_count",
+    }
+
+    # Apply column name transformations
+    for old_pattern, new_name in column_mappings.items():
+        schema = re.sub(old_pattern, new_name, schema)
+
+    # 2.5. Remove table name prefixes from column names (per project.md conventions)
+    # This must happen AFTER general column transformations to avoid conflicts
+    # Use simple global replacements - these are safe because column names are unique enough
+
+    # County columns
+    schema = re.sub(r"\bcounty_code\b", "code", schema)
+    schema = re.sub(r"\bcounty_name\b", "name", schema)
+
+    # Settlement columns
+    schema = re.sub(r"\bsettlement_code\b", "code", schema)
+    schema = re.sub(r"\bsettlement_name\b", "name", schema)
+
+    # oevk column (careful with table references)
+    schema = re.sub(r"\boevk TEXT", "code TEXT", schema)
+    schema = re.sub(r", oevk\)", ", code)", schema)  # UNIQUE constraints
+
+    # tevk column (careful with table references)
+    schema = re.sub(r"\btevk TEXT", "code TEXT", schema)
+    schema = re.sub(r", tevk\)", ", code)", schema)  # UNIQUE constraints
+
+    # postal_code column (in postal_code table)
+    schema = re.sub(r"    postal_code TEXT UNIQUE", "    code TEXT UNIQUE", schema)
+
+    # polling_station column
+    schema = re.sub(r"\bpolling_station_address\b", "address", schema)
+
+    # public_space_name column (in public_space_name table)
+    schema = re.sub(
+        r"    public_space_name TEXT UNIQUE", "    name TEXT UNIQUE", schema
+    )
+
+    # public_space_type column (in public_space_type table)
+    schema = re.sub(
+        r"    public_space_type TEXT UNIQUE", "    name TEXT UNIQUE", schema
+    )
+
+    # 2.6. Remove timestamp columns (created_at, geocoded_at) - not user-facing
+    # Remove geocoded_at from polling_station
+    schema = re.sub(r"    geocoded_at TIMESTAMP,\n", "", schema)
+
+    # Remove created_at from various tables
+    schema = re.sub(
+        r"    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,\n", "", schema
+    )
+
+    # Remove indexes on removed columns
+    # Note: These patterns match PascalCase names before snake_case conversion happens at step 3
+    schema = re.sub(
+        r"CREATE INDEX IF NOT EXISTS idx_[A-Za-z]+_CreatedAt ON [A-Za-z]+\(CreatedAt\);\n",
+        "",
+        schema,
+    )
+    schema = re.sub(
+        r"CREATE INDEX IF NOT EXISTS idx_[A-Za-z]+_GeocodedAt ON [A-Za-z]+\(GeocodedAt\);\n",
+        "",
+        schema,
+    )
+
+    # 3. Convert index names to snake_case with proper patterns
+    # Pattern: idx_TableName_ColumnName -> idx_table_name_column_name
+    schema = re.sub(
+        r"idx_([A-Z][a-zA-Z]+)_([A-Z][a-zA-Z_]+)",
+        lambda m: f"idx_{_to_snake_case(m.group(1))}_{_to_snake_case(m.group(2))}",
+        schema,
+    )
+
+    # 3.5. Remove timestamp indexes again (after snake_case conversion)
+    # This catches any indexes that weren't removed in step 2.6
+    schema = re.sub(
+        r"CREATE INDEX IF NOT EXISTS idx_[a-z_]+_created_at ON [A-Za-z]+\(created_at\);\n",
+        "",
+        schema,
+    )
+    schema = re.sub(
+        r"CREATE INDEX IF NOT EXISTS idx_[a-z_]+_geocoded_at ON [A-Za-z]+\(geocoded_at\);\n",
+        "",
+        schema,
+    )
+
     # Convert all ID columns from TEXT to UUID
-    # Pattern: ID TEXT PRIMARY KEY -> ID UUID PRIMARY KEY
-    schema = re.sub(r'\bID TEXT\b', 'ID UUID', schema)
-    # Pattern: _ID TEXT -> _ID UUID (for foreign keys)
-    schema = re.sub(r'_ID TEXT\b', '_ID UUID', schema)
-    # Pattern: _ID TEXT, -> _ID UUID, (with comma)
-    schema = re.sub(r'_ID TEXT,', '_ID UUID,', schema)
+    # Pattern: id TEXT PRIMARY KEY -> id UUID PRIMARY KEY
+    schema = re.sub(r"\bid TEXT\b", "id UUID", schema)
+    # Pattern: _id TEXT -> _id UUID (for foreign keys)
+    schema = re.sub(r"_id TEXT\b", "_id UUID", schema)
+    # Pattern: _id TEXT, -> _id UUID, (with comma)
+    schema = re.sub(r"_id TEXT,", "_id UUID,", schema)
 
-    # Convert OEVK Center and Polygon to PostGIS GEOMETRY types if enabled
+    # Convert OEVK center and polygon to PostGIS GEOMETRY types if enabled
     if use_postgis:
-        # Replace Center TEXT with GEOMETRY(POINT, 4326)
+        # Replace center TEXT with GEOMETRY(POINT, 4326)
+        # Note: Pattern matches after column name transformation (center not Center)
         schema = re.sub(
-            r"Center TEXT, -- Center point coordinates \(space-separated: \"lat lon\"\)",
-            "Center GEOMETRY(POINT, 4326), -- Center point coordinates using PostGIS (SRID 4326 = WGS 84)",
-            schema
+            r"center TEXT, -- center point coordinates \(space-separated: \"lat lon\"\)",
+            "center GEOMETRY(POINT, 4326), -- Center point coordinates using PostGIS (SRID 4326 = WGS 84)",
+            schema,
         )
-        # Replace Polygon TEXT with GEOMETRY(POLYGON, 4326)
+        # Replace polygon TEXT with GEOMETRY(POLYGON, 4326)
         schema = re.sub(
-            r"Polygon TEXT, -- Boundary polygon coordinates \(comma-separated pairs: \"lat1 lon1,lat2 lon2,...\"\)",
-            "Polygon GEOMETRY(POLYGON, 4326), -- Boundary polygon coordinates using PostGIS (SRID 4326 = WGS 84)",
-            schema
+            r"polygon TEXT, -- Boundary polygon coordinates \(comma-separated pairs: \"lat1 lon1,lat2 lon2,...\"\)",
+            "polygon GEOMETRY(POLYGON, 4326), -- Boundary polygon coordinates using PostGIS (SRID 4326 = WGS 84)",
+            schema,
         )
 
-        # Add spatial indexes after NationalIndividualElectoralDistrict indexes
+        # Add spatial indexes after oevk indexes
         spatial_indexes = """
 -- Spatial indexes for geospatial queries on OEVK geometries
-CREATE INDEX IF NOT EXISTS idx_oevk_center_gist ON NationalIndividualElectoralDistrict USING GIST (Center);
-CREATE INDEX IF NOT EXISTS idx_oevk_polygon_gist ON NationalIndividualElectoralDistrict USING GIST (Polygon);
+CREATE INDEX IF NOT EXISTS idx_oevk_center_gist ON oevk USING GIST (center);
+CREATE INDEX IF NOT EXISTS idx_oevk_polygon_gist ON oevk USING GIST (polygon);
 """
-        # Insert spatial indexes after the NationalIndividualElectoralDistrict_County_ID index
+        # Insert spatial indexes after the oevk county_id index
         schema = re.sub(
-            r"(CREATE INDEX IF NOT EXISTS idx_NationalIndividualElectoralDistrict_County_ID ON NationalIndividualElectoralDistrict\(County_ID\);)",
+            r"(CREATE INDEX IF NOT EXISTS idx_oevk_county_id ON oevk\(county_id\);)",
             r"\1" + spatial_indexes,
-            schema
+            schema,
         )
 
         # Add GEOGRAPHY columns for geocoding if enabled
         geocoding_use_postgis = config.get("geocoding", {}).get("use_postgis", True)
         if geocoding_use_postgis:
-            # Add Geometry GEOGRAPHY column to Address after coordinate columns
+            # Add geometry GEOGRAPHY column to address after coordinate columns
             schema = re.sub(
-                r"(CREATE INDEX IF NOT EXISTS idx_Address_Quality ON Address\(GeocodingQuality\);)",
-                r"\1\n\n-- Add PostGIS GEOGRAPHY column for spatial queries\nALTER TABLE Address ADD COLUMN IF NOT EXISTS Geometry GEOGRAPHY(POINT, 4326);",
-                schema
+                r"(CREATE INDEX IF NOT EXISTS idx_address_quality ON address\(geocoding_quality\);)",
+                r"\1\n\n-- Add PostGIS GEOGRAPHY column for spatial queries\nALTER TABLE address ADD COLUMN IF NOT EXISTS geometry GEOGRAPHY(POINT, 4326);",
+                schema,
             )
-            # Add GIST spatial index for Address
+            # Add GIST spatial index for address
             schema = re.sub(
-                r"(ALTER TABLE Address ADD COLUMN IF NOT EXISTS Geometry GEOGRAPHY\(POINT, 4326\);)",
-                r"\1\nCREATE INDEX IF NOT EXISTS idx_Address_Geometry ON Address USING GIST(Geometry);",
-                schema
+                r"(ALTER TABLE address ADD COLUMN IF NOT EXISTS geometry GEOGRAPHY\(POINT, 4326\);)",
+                r"\1\nCREATE INDEX IF NOT EXISTS idx_address_geometry ON address USING GIST(geometry);",
+                schema,
             )
 
-            # Add Geometry GEOGRAPHY column to PollingStation after coordinate columns
+            # Add geometry GEOGRAPHY column to polling_station after coordinate columns
             schema = re.sub(
-                r"(CREATE INDEX IF NOT EXISTS idx_PollingStation_Quality ON PollingStation\(GeocodingQuality\);)",
-                r"\1\n\n-- Add PostGIS GEOGRAPHY column for spatial queries\nALTER TABLE PollingStation ADD COLUMN IF NOT EXISTS Geometry GEOGRAPHY(POINT, 4326);",
-                schema
+                r"(CREATE INDEX IF NOT EXISTS idx_polling_station_quality ON polling_station\(geocoding_quality\);)",
+                r"\1\n\n-- Add PostGIS GEOGRAPHY column for spatial queries\nALTER TABLE polling_station ADD COLUMN IF NOT EXISTS geometry GEOGRAPHY(POINT, 4326);",
+                schema,
             )
-            # Add GIST spatial index for PollingStation
+            # Add GIST spatial index for polling_station
             schema = re.sub(
-                r"(ALTER TABLE PollingStation ADD COLUMN IF NOT EXISTS Geometry GEOGRAPHY\(POINT, 4326\);)",
-                r"\1\nCREATE INDEX IF NOT EXISTS idx_PollingStation_Geometry ON PollingStation USING GIST(Geometry);",
-                schema
+                r"(ALTER TABLE polling_station ADD COLUMN IF NOT EXISTS geometry GEOGRAPHY\(POINT, 4326\);)",
+                r"\1\nCREATE INDEX IF NOT EXISTS idx_polling_station_geometry ON polling_station USING GIST(geometry);",
+                schema,
             )
 
     # For PostgreSQL export, we only want the canonical (cleansed) data:
@@ -256,8 +481,9 @@ CREATE INDEX IF NOT EXISTS idx_oevk_polygon_gist ON NationalIndividualElectoralD
     # - Update AddressPollingStations and AddressPIRCodes to reference Address
 
     # Remove unwanted tables
+    # Note: Table names have already been transformed to snake_case by this point
     schema = re.sub(
-        r"-- Address table.*?CREATE TABLE IF NOT EXISTS Address \(.*?\);",
+        r"-- address table\s+CREATE TABLE IF NOT EXISTS address \(.*?\);",
         "",
         schema,
         flags=re.DOTALL,
@@ -265,24 +491,29 @@ CREATE INDEX IF NOT EXISTS idx_oevk_polygon_gist ON NationalIndividualElectoralD
     schema = re.sub(
         r"CREATE TABLE IF NOT EXISTS Address_new.*?;", "", schema, flags=re.DOTALL
     )
+    # Remove address_mapping table (snake_case version after transformation)
     schema = re.sub(
-        r"CREATE TABLE IF NOT EXISTS AddressMapping.*?;", "", schema, flags=re.DOTALL
-    )
-    schema = re.sub(
-        r"CREATE TABLE IF NOT EXISTS DeduplicationReport.*?;",
-        "",
-        schema,
-        flags=re.DOTALL,
-    )
-    # Remove AddressPollingStations and AddressPIRCodes tables (replaced by direct columns in Address)
-    schema = re.sub(
-        r"-- AddressPollingStations table.*?CREATE TABLE IF NOT EXISTS AddressPollingStations.*?\);",
+        r"-- address_mapping table.*?CREATE TABLE IF NOT EXISTS address_mapping.*?\);",
         "",
         schema,
         flags=re.DOTALL,
     )
     schema = re.sub(
-        r"-- AddressPIRCodes table.*?CREATE TABLE IF NOT EXISTS AddressPIRCodes.*?\);",
+        r"CREATE TABLE IF NOT EXISTS deduplication_report.*?;",
+        "",
+        schema,
+        flags=re.DOTALL,
+    )
+    # Remove address_polling_stations and address_pir_codes tables (replaced by direct columns in Address)
+    # Note: Use snake_case names as table names were already transformed
+    schema = re.sub(
+        r"-- address_polling_stations table.*?CREATE TABLE IF NOT EXISTS address_polling_stations.*?\);",
+        "",
+        schema,
+        flags=re.DOTALL,
+    )
+    schema = re.sub(
+        r"-- address_pir_codes table.*?CREATE TABLE IF NOT EXISTS address_pir_codes.*?\);",
         "",
         schema,
         flags=re.DOTALL,
@@ -290,81 +521,117 @@ CREATE INDEX IF NOT EXISTS idx_oevk_polygon_gist ON NationalIndividualElectoralD
 
     # Remove comment sections for removed tables
     schema = re.sub(r"-- Deduplication tables.*?\n", "", schema)
+    schema = re.sub(r"-- DeduplicationReport table.*?\n", "", schema)
     schema = re.sub(r"-- New indexes for deduplication tables.*?\n", "", schema)
 
     # Remove indexes for removed tables
-    schema = re.sub(r"CREATE INDEX IF NOT EXISTS idx_Address_new.*?;", "", schema)
-    schema = re.sub(r"CREATE INDEX IF NOT EXISTS idx_Address_.*?;", "", schema)
-    schema = re.sub(r"CREATE INDEX IF NOT EXISTS idx_AddressMapping.*?;", "", schema)
-    schema = re.sub(r"CREATE INDEX IF NOT EXISTS idx_CanonicalAddress.*?;", "", schema)
+    # Note: These patterns use snake_case because index names were already converted at step 3
+    schema = re.sub(r"CREATE INDEX IF NOT EXISTS idx_address_new.*?;\n?", "", schema)
     schema = re.sub(
-        r"CREATE INDEX IF NOT EXISTS idx_DeduplicationReport.*?;", "", schema
+        r"CREATE INDEX IF NOT EXISTS idx_address_mapping.*?;\n?", "", schema
     )
-    schema = re.sub(r"CREATE INDEX IF NOT EXISTS idx_AddressPollingStations.*?;", "", schema)
-    schema = re.sub(r"CREATE INDEX IF NOT EXISTS idx_AddressPIRCodes.*?;", "", schema)
-
-    # Remove CanonicalAddress table and insert custom Address table at the right position
-    # The Address table must come BEFORE AddressPollingStations and AddressPIRCodes
-    # which reference it
-
-    # Replace CanonicalAddress table with a placeholder
     schema = re.sub(
-        r"-- CanonicalAddress table.*?CREATE TABLE IF NOT EXISTS CanonicalAddress \(.*?\);",
+        r"CREATE INDEX IF NOT EXISTS idx_canonical_address.*?;\n?", "", schema
+    )
+    schema = re.sub(
+        r"CREATE INDEX IF NOT EXISTS idx_deduplication_report.*?;\n?", "", schema
+    )
+    schema = re.sub(
+        r"CREATE INDEX IF NOT EXISTS idx_address_polling_stations.*?;\n?", "", schema
+    )
+    schema = re.sub(
+        r"CREATE INDEX IF NOT EXISTS idx_address_pir_codes.*?;\n?", "", schema
+    )
+
+    # Remove orphaned indexes that reference Address_new table (case-insensitive)
+    schema = re.sub(r"CREATE INDEX IF NOT EXISTS idx_Address_new.*?;\n?", "", schema)
+
+    # Remove incorrect public_space indexes that use wrong column names
+    # These use 'public_space_type' and 'public_space_name' columns which don't exist (should be 'name')
+    schema = re.sub(
+        r"CREATE INDEX IF NOT EXISTS idx_public_space_type_public_space_type ON public_space_type\(public_space_type\);\n?",
+        "",
+        schema,
+    )
+    schema = re.sub(
+        r"CREATE INDEX IF NOT EXISTS idx_public_space_name_public_space_name ON public_space_name\(public_space_name\);\n?",
+        "",
+        schema,
+    )
+
+    # Remove the entire "Update address table to use foreign keys" section with premature indexes
+    # This section contains address table indexes that appear before the address table definition
+    # We'll add proper indexes in the custom_address_table below
+    schema = re.sub(
+        r"-- Update address table to use foreign keys.*?(?=-- address table|CREATE TABLE IF NOT EXISTS address)",
+        "",
+        schema,
+        flags=re.DOTALL,
+    )
+
+    # Remove address table (CanonicalAddress after transformation) and insert custom address table
+    # The address table must come BEFORE address_polling_stations and address_pir_codes
+    # Note: Table names have already been transformed to snake_case by this point
+
+    # Replace address table (transformed from CanonicalAddress) with a placeholder
+    # Note: The comment has already been transformed from "CanonicalAddress" to "address" by this point
+    schema = re.sub(
+        r"-- address table for deduplicated addresses.*?CREATE TABLE IF NOT EXISTS address \(.*?\);",
         "%%ADDRESS_TABLE_PLACEHOLDER%%",
         schema,
         flags=re.DOTALL,
     )
 
-    # Update references: CanonicalAddressID -> AddressID in remaining tables
-    schema = re.sub(r"\bCanonicalAddressID\b", "AddressID", schema)
-    schema = re.sub(r"REFERENCES CanonicalAddress", "REFERENCES Address", schema)
-
-    # Update index names: idx_*_CanonicalAddressID -> idx_*_AddressID
-    schema = re.sub(r"idx_(\w+)_CanonicalAddressID", r"idx_\1_AddressID", schema)
-
     # Create custom Address table for PostgreSQL with the exact structure we export
-    # This combines data from CanonicalAddress with PollingStation_ID and PIRCode
+    # This combines data from CanonicalAddress with all necessary foreign keys
     custom_address_table = """
--- Address table (canonical/cleansed addresses)
+-- address table (canonical/cleansed addresses)
 -- This is the deduplicated, cleansed address data exported from CanonicalAddress
--- Includes PollingStation_ID and PIRCode directly (instead of junction tables)
-CREATE TABLE IF NOT EXISTS Address (
-    ID UUID PRIMARY KEY,
-    CountyCode TEXT NOT NULL,
-    SettlementName TEXT NOT NULL,
-    StreetName TEXT NOT NULL,
-    HouseNumber TEXT NOT NULL,
-    Building TEXT,
-    Staircase TEXT,
-    FullAddress TEXT NOT NULL,
-    AccessibilityFlag TEXT,
-    Latitude REAL,
-    Longitude REAL,
-    GeocodingQuality TEXT,
-    GeocodingSource TEXT,
-    GeocodedAt TIMESTAMP,
-    CreatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    County_ID UUID,
-    Settlement_ID UUID,
-    PollingStation_ID UUID,
-    PIRCode TEXT,
-    FOREIGN KEY (County_ID) REFERENCES County(ID),
-    FOREIGN KEY (Settlement_ID) REFERENCES Settlement(ID),
-    FOREIGN KEY (PollingStation_ID) REFERENCES PollingStation(ID),
-    UNIQUE (CountyCode, SettlementName, FullAddress)
+-- Includes all foreign keys for relationships
+CREATE TABLE IF NOT EXISTS address (
+    id UUID PRIMARY KEY,
+    house_number TEXT,  -- Can be NULL for infrastructure/area addresses or when building/staircase suffices
+    building TEXT,
+    staircase TEXT,
+    full_address TEXT NOT NULL,
+    latitude REAL,
+    longitude REAL,
+    geocoding_quality TEXT,
+    geocoding_source TEXT,
+    county_id UUID NOT NULL,
+    settlement_id UUID NOT NULL,
+    public_space_name_id UUID NOT NULL,
+    public_space_type_id UUID NOT NULL,
+    oevk_id UUID NOT NULL,
+    tevk_id UUID NOT NULL,
+    postal_code_id UUID NOT NULL,
+    polling_station_id UUID NOT NULL,
+    FOREIGN KEY (county_id) REFERENCES county(id),
+    FOREIGN KEY (settlement_id) REFERENCES settlement(id),
+    FOREIGN KEY (public_space_name_id) REFERENCES public_space_name(id),
+    FOREIGN KEY (public_space_type_id) REFERENCES public_space_type(id),
+    FOREIGN KEY (oevk_id) REFERENCES oevk(id),
+    FOREIGN KEY (tevk_id) REFERENCES tevk(id),
+    FOREIGN KEY (postal_code_id) REFERENCES postal_code(id),
+    FOREIGN KEY (polling_station_id) REFERENCES polling_station(id),
+    UNIQUE (full_address, settlement_id)
 );
 
 -- Add PostGIS GEOGRAPHY column for spatial queries (populated after data import)
-ALTER TABLE Address ADD COLUMN IF NOT EXISTS Geometry GEOGRAPHY(POINT, 4326);
+ALTER TABLE address ADD COLUMN IF NOT EXISTS geometry GEOGRAPHY(POINT, 4326);
 
--- Indexes for Address table
-CREATE INDEX IF NOT EXISTS idx_Address_Coordinates ON Address(Latitude, Longitude);
-CREATE INDEX IF NOT EXISTS idx_Address_Quality ON Address(GeocodingQuality);
-CREATE INDEX IF NOT EXISTS idx_Address_County_ID ON Address(County_ID);
-CREATE INDEX IF NOT EXISTS idx_Address_Settlement_ID ON Address(Settlement_ID);
-CREATE INDEX IF NOT EXISTS idx_Address_PollingStation_ID ON Address(PollingStation_ID);
-CREATE INDEX IF NOT EXISTS idx_Address_PIRCode ON Address(PIRCode);
-CREATE INDEX IF NOT EXISTS idx_Address_Geometry ON Address USING GIST(Geometry);
+-- Indexes for address table
+CREATE INDEX IF NOT EXISTS idx_address_coordinates ON address(latitude, longitude);
+CREATE INDEX IF NOT EXISTS idx_address_quality ON address(geocoding_quality);
+CREATE INDEX IF NOT EXISTS idx_address_county_id ON address(county_id);
+CREATE INDEX IF NOT EXISTS idx_address_settlement_id ON address(settlement_id);
+CREATE INDEX IF NOT EXISTS idx_address_public_space_name_id ON address(public_space_name_id);
+CREATE INDEX IF NOT EXISTS idx_address_public_space_type_id ON address(public_space_type_id);
+CREATE INDEX IF NOT EXISTS idx_address_oevk_id ON address(oevk_id);
+CREATE INDEX IF NOT EXISTS idx_address_tevk_id ON address(tevk_id);
+CREATE INDEX IF NOT EXISTS idx_address_postal_code_id ON address(postal_code_id);
+CREATE INDEX IF NOT EXISTS idx_address_polling_station_id ON address(polling_station_id);
+CREATE INDEX IF NOT EXISTS idx_address_geometry ON address USING GIST(geometry);
 
 """
 
@@ -380,15 +647,14 @@ CREATE INDEX IF NOT EXISTS idx_Address_Geometry ON Address USING GIST(Geometry);
 
 -- PostgreSQL-specific extensions
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
-CREATE EXTENSION IF NOT EXISTS postgis;
 
--- Trigram index for efficient LIKE/ILIKE queries on FullAddress
+-- Trigram index for efficient LIKE/ILIKE queries on full_address
 -- Enables fast substring searches like '%Bar%' and '%utca%'
-CREATE INDEX IF NOT EXISTS idx_address_fulladdress_trgm ON Address USING gin (FullAddress gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_address_full_address_trgm ON address USING gin (full_address gin_trgm_ops);
 
 -- Spatial indexes for geocoded coordinates using PostGIS
-CREATE INDEX IF NOT EXISTS idx_Address_Geometry ON Address USING GIST(Geometry);
-CREATE INDEX IF NOT EXISTS idx_PollingStation_Geometry ON PollingStation USING GIST(Geometry);
+CREATE INDEX IF NOT EXISTS idx_address_geometry ON address USING GIST(geometry);
+CREATE INDEX IF NOT EXISTS idx_polling_station_geometry ON polling_station USING GIST(geometry);
 
 """
 
@@ -488,6 +754,30 @@ COMMENT ON VIEW AddressFullView IS 'Denormalized view of addresses with all rela
     # This ensures Address table appears in the correct position (before AddressPollingStations)
     schema = schema.replace("%%ADDRESS_TABLE_PLACEHOLDER%%", custom_address_table)
 
+    # Final cleanup: Remove staging tables and duplicate statements
+    # Remove staging_oevk_json table (internal ETL artifact)
+    schema = re.sub(
+        r"-- Staging table for oevk JSON data.*?CREATE TABLE IF NOT EXISTS staging_oevk_json.*?\);",
+        "",
+        schema,
+        flags=re.DOTALL,
+    )
+
+    # Remove duplicate extension creation statements (will be added by postgresql_indexes)
+    # Keep only the first PostGIS extension at the top
+    schema = re.sub(
+        r"-- PostgreSQL-specific extensions\nCREATE EXTENSION IF NOT EXISTS pg_trgm;\nCREATE EXTENSION IF NOT EXISTS postgis;\n",
+        "",
+        schema,
+    )
+
+    # Remove any remaining orphaned index sections
+    schema = re.sub(
+        r"-- New indexes for public space tables.*?\n(?=CREATE INDEX|-- |$)",
+        "",
+        schema,
+    )
+
     return schema + postgresql_indexes
 
 
@@ -518,20 +808,20 @@ def export_tables_to_csv(
     # List of tables to export (excluding Address which gets special treatment)
     # Order matters for foreign key dependencies in PostgreSQL import
     tables = [
-        "County",                                    # Base reference (no dependencies)
-        "Settlement",                                # Depends on County
-        "NationalIndividualElectoralDistrict",      # Depends on County (OEVK)
-        "SettlementIndividualElectoralDistrict",    # Depends on County, Settlement (TEVK)
-        "PostalCode",                                # Base reference (no dependencies)
-        "PostalCode_Settlement",                     # Junction table
-        "PollingStation",                            # Depends on multiple tables
-        "PublicSpaceName",                           # Base reference
-        "PublicSpaceType",                           # Base reference
-        "SettlementPublicSpaces",                    # Junction table
-        "AddressPollingStations",                    # Junction table
-        "AddressPIRCodes",                           # Junction table
-        "CanonicalAddress",                          # Deduplicated addresses (no FK constraints)
-        "AddressMapping",                            # Deduplication mapping
+        "County",  # Base reference (no dependencies)
+        "Settlement",  # Depends on County
+        "NationalIndividualElectoralDistrict",  # Depends on County (OEVK)
+        "SettlementIndividualElectoralDistrict",  # Depends on County, Settlement (TEVK)
+        "PostalCode",  # Base reference (no dependencies)
+        "PostalCode_Settlement",  # Junction table
+        "PollingStation",  # Depends on multiple tables
+        "PublicSpaceName",  # Base reference
+        "PublicSpaceType",  # Base reference
+        "SettlementPublicSpaces",  # Junction table
+        "AddressPollingStations",  # Junction table
+        "AddressPIRCodes",  # Junction table
+        "CanonicalAddress",  # Deduplicated addresses (no FK constraints)
+        "AddressMapping",  # Deduplication mapping
     ]
 
     # Handle CSV export
@@ -560,15 +850,22 @@ def export_tables_to_csv(
         # - AddressMapping: only needed for DuckDB deduplication
         # - AddressPollingStations: replaced by PollingStation_ID column in Address
         # - AddressPIRCodes: replaced by PIRCode column in Address
-        postgresql_tables = [t for t in tables if t not in [
-            "CanonicalAddress",
-            "AddressMapping",
-            "AddressPollingStations",
-            "AddressPIRCodes"
-        ]]
+        postgresql_tables = [
+            t
+            for t in tables
+            if t
+            not in [
+                "CanonicalAddress",
+                "AddressMapping",
+                "AddressPollingStations",
+                "AddressPIRCodes",
+            ]
+        ]
 
         # Export tables to CSV
-        csv_files = export_tables_to_postgresql_csv(conn, postgresql_dir, postgresql_tables)
+        csv_files = export_tables_to_postgresql_csv(
+            conn, postgresql_dir, postgresql_tables
+        )
 
         # Export CanonicalAddress as Address (the canonical address table for PostgreSQL)
         canonical_csv = export_canonical_address_to_csv(conn, postgresql_dir)
@@ -580,7 +877,9 @@ def export_tables_to_csv(
         # Convert to absolute path for PostgreSQL COPY command
         postgresql_dir_abs = os.path.abspath(postgresql_dir)
         config = get_config()  # Get configuration for PostgreSQL settings
-        generate_postgresql_import_script(import_script_path, postgresql_dir_abs, csv_files, config)
+        generate_postgresql_import_script(
+            import_script_path, postgresql_dir_abs, csv_files, config
+        )
 
         logger.info(f"PostgreSQL CSV files written to {postgresql_dir}/")
         logger.info(f"Import script written to {import_script_path}")
@@ -628,13 +927,12 @@ def export_table_to_csv(
 
 
 def export_tables_to_postgresql_csv(
-    db_connection: duckdb.DuckDBPyConnection,
-    output_dir: str,
-    tables: list
+    db_connection: duckdb.DuckDBPyConnection, output_dir: str, tables: list
 ) -> dict:
     """Export tables to CSV files for PostgreSQL COPY command.
 
     Converts MD5 hex IDs to UUID5 format for PostgreSQL compatibility.
+    Transforms column names from PascalCase to snake_case to match PostgreSQL schema.
 
     Args:
         db_connection: DuckDB connection
@@ -649,6 +947,34 @@ def export_tables_to_postgresql_csv(
     # Create DuckDB UDF for UUID5 conversion
     db_connection.create_function("to_uuid5", to_uuid5, return_type="VARCHAR")
 
+    # Helper function to convert column names to snake_case for PostgreSQL
+    def to_postgres_column_name(col_name: str) -> str:
+        """Convert DuckDB PascalCase column names to PostgreSQL snake_case."""
+        # Special mappings for known columns
+        mappings = {
+            "ID": "id",
+            "OEVK": "code",  # NationalIndividualElectoralDistrict
+            "TEVK": "code",  # SettlementIndividualElectoralDistrict
+            "PostalCode": "code",  # PostalCode table
+            "PollingStationAddress": "address",
+            "CountyCode": "code",
+            "CountyName": "name",
+            "SettlementCode": "code",
+            "SettlementName": "name",
+            "PublicSpaceName": "name",
+            "PublicSpaceType": "name",
+            "Center": "center_wkt",  # For PostGIS WKT format
+            "Polygon": "polygon_wkt",  # For PostGIS WKT format
+            "GeocodedAt": None,  # Remove this column
+            "CreatedAt": None,  # Remove this column
+        }
+
+        if col_name in mappings:
+            return mappings[col_name]
+
+        # Apply general snake_case transformation
+        return _to_snake_case(col_name)
+
     for table in tables:
         csv_path = os.path.join(output_dir, f"{table}.csv")
         logger.info(f"  Exporting {table} to CSV...")
@@ -661,36 +987,44 @@ def export_tables_to_postgresql_csv(
         columns_result = db_connection.execute(f"DESCRIBE {table}").fetchall()
         columns = [col[0] for col in columns_result]
 
-        # Build SELECT list with UUID5 conversion for ID columns
+        # Build SELECT list with UUID5 conversion for ID columns and snake_case column names
         select_items = []
         for col in columns:
-            if col == 'ID' or col.endswith('_ID'):
-                # Convert ID columns to UUID5
-                select_items.append(f"to_uuid5({col}) as {col}")
+            # Get PostgreSQL column name
+            pg_col = to_postgres_column_name(col)
+
+            # Skip columns that should be removed (like GeocodedAt, CreatedAt)
+            if pg_col is None:
+                continue
+
+            if col == "ID" or col.endswith("_ID"):
+                # Convert ID columns to UUID5 with snake_case alias
+                select_items.append(f"to_uuid5({col}) as {pg_col}")
             else:
-                select_items.append(col)
+                # Use snake_case alias for non-ID columns
+                select_items.append(f"{col} as {pg_col}")
 
         select_clause = ", ".join(select_items)
 
         # Special handling for NationalIndividualElectoralDistrict with PostGIS
         if table == "NationalIndividualElectoralDistrict" and use_postgis:
-            # Convert Center and Polygon to WKT format, and IDs to UUID5
+            # Convert Center and Polygon to WKT format, IDs to UUID5, and use snake_case column names
             query = f"""
                 SELECT
-                    to_uuid5(ID) as ID,
-                    OEVK,
-                    Name,
+                    to_uuid5(ID) as id,
+                    OEVK as code,
+                    Name as name,
                     CASE
                         WHEN Center IS NOT NULL THEN
                             'POINT(' || split_part(Center, ' ', 2) || ' ' || split_part(Center, ' ', 1) || ')'
                         ELSE NULL
-                    END as Center,
+                    END as center_wkt,
                     CASE
                         WHEN Polygon IS NOT NULL THEN
                             'POLYGON((' || regexp_replace(Polygon, '([0-9.]+) ([0-9.]+)', '\\2 \\1', 'g') || '))'
                         ELSE NULL
-                    END as Polygon,
-                    to_uuid5(County_ID) as County_ID
+                    END as polygon_wkt,
+                    to_uuid5(County_ID) as county_id
                 FROM NationalIndividualElectoralDistrict
             """
         # Special handling for junction tables - rename CanonicalAddressID to AddressID
@@ -730,8 +1064,7 @@ def export_tables_to_postgresql_csv(
 
 
 def export_canonical_address_to_csv(
-    db_connection: duckdb.DuckDBPyConnection,
-    output_dir: str
+    db_connection: duckdb.DuckDBPyConnection, output_dir: str
 ) -> str:
     """Export CanonicalAddress table to CSV as 'Address' for PostgreSQL.
 
@@ -749,22 +1082,41 @@ def export_canonical_address_to_csv(
     import time
 
     csv_path = os.path.join(output_dir, "Address.csv")
-    logger.info("  Exporting CanonicalAddress to CSV as Address (with foreign keys and UUID5 conversion)...")
+    logger.info(
+        "  Exporting CanonicalAddress to CSV as Address (with foreign keys and UUID5 conversion)..."
+    )
 
     # Get total row count for progress tracking
-    total_rows = db_connection.execute("SELECT COUNT(*) FROM CanonicalAddress").fetchone()[0]
+    total_rows = db_connection.execute(
+        "SELECT COUNT(*) FROM CanonicalAddress"
+    ).fetchone()[0]
     logger.info(f"    Total addresses to export: {total_rows:,}")
 
     if total_rows == 0:
-        # Create empty CSV with headers
-        with open(csv_path, 'w', encoding='utf-8', newline='') as f:
+        # Create empty CSV with headers (PostgreSQL snake_case naming)
+        with open(csv_path, "w", encoding="utf-8", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow([
-                'ID', 'CountyCode', 'SettlementName', 'StreetName', 'HouseNumber',
-                'Building', 'Staircase', 'FullAddress', 'AccessibilityFlag', 'Latitude', 'Longitude',
-                'GeocodingQuality', 'GeocodingSource', 'GeocodedAt', 'CreatedAt',
-                'County_ID', 'Settlement_ID', 'PollingStation_ID', 'PIRCode'
-            ])
+            writer.writerow(
+                [
+                    "id",
+                    "house_number",
+                    "building",
+                    "staircase",
+                    "full_address",
+                    "latitude",
+                    "longitude",
+                    "geocoding_quality",
+                    "geocoding_source",
+                    "county_id",
+                    "settlement_id",
+                    "public_space_name_id",
+                    "public_space_type_id",
+                    "oevk_id",
+                    "tevk_id",
+                    "postal_code_id",
+                    "polling_station_id",
+                ]
+            )
         logger.info(f"    Address (from CanonicalAddress): 0 rows")
         return csv_path
 
@@ -778,41 +1130,91 @@ def export_canonical_address_to_csv(
     result = db_connection.execute("""
         SELECT
             ca.ID,
-            ca.CountyCode,
-            ca.SettlementName,
-            ca.StreetName,
             ca.HouseNumber,
             ca.Building,
             ca.Staircase,
             ca.FullAddress,
-            ca.AccessibilityFlag,
             ca.Latitude,
             ca.Longitude,
             ca.GeocodingQuality,
             ca.GeocodingSource,
-            ca.GeocodedAt,
-            ca.CreatedAt,
             c.ID as County_ID,
             s.ID as Settlement_ID,
-            ps.PollingStationID as PollingStation_ID,
-            pir.PIRCode
+            psn.ID as PublicSpaceName_ID,
+            pst.ID as PublicSpaceType_ID,
+            oevk_fk.NationalIndividualElectoralDistrict_ID,
+            tevk_fk.SettlementIndividualElectoralDistrict_ID,
+            pc_fk.PostalCode_ID,
+            ps_fk.PollingStationID as PollingStation_ID
         FROM CanonicalAddress ca
         LEFT JOIN County c ON ca.CountyCode = c.CountyCode
         LEFT JOIN Settlement s ON c.ID = s.County_ID AND ca.SettlementName = s.SettlementName
+        -- Join to get public space foreign keys from original Address records
+        LEFT JOIN (
+            SELECT
+                am.CanonicalAddressID,
+                MIN(psn_inner.ID) as PublicSpaceName_ID
+            FROM AddressMapping am
+            INNER JOIN Address a ON am.OriginalAddressID = a.ID
+            INNER JOIN PublicSpaceName psn_inner ON a.PublicSpaceName = psn_inner.PublicSpaceName
+            GROUP BY am.CanonicalAddressID
+        ) psn_map ON ca.ID = psn_map.CanonicalAddressID
+        LEFT JOIN PublicSpaceName psn ON psn_map.PublicSpaceName_ID = psn.ID
+        LEFT JOIN (
+            SELECT
+                am.CanonicalAddressID,
+                MIN(pst_inner.ID) as PublicSpaceType_ID
+            FROM AddressMapping am
+            INNER JOIN Address a ON am.OriginalAddressID = a.ID
+            INNER JOIN PublicSpaceType pst_inner ON a.PublicSpaceType = pst_inner.PublicSpaceType
+            GROUP BY am.CanonicalAddressID
+        ) pst_map ON ca.ID = pst_map.CanonicalAddressID
+        LEFT JOIN PublicSpaceType pst ON pst_map.PublicSpaceType_ID = pst.ID
+        -- Get OEVK, TEVK, and PostalCode from original Address records
+        LEFT JOIN (
+            SELECT
+                am.CanonicalAddressID,
+                MIN(a.NationalIndividualElectoralDistrict_ID) as NationalIndividualElectoralDistrict_ID
+            FROM AddressMapping am
+            INNER JOIN Address a ON am.OriginalAddressID = a.ID
+            GROUP BY am.CanonicalAddressID
+        ) oevk_fk ON ca.ID = oevk_fk.CanonicalAddressID
+        LEFT JOIN (
+            SELECT
+                am.CanonicalAddressID,
+                MIN(a.SettlementIndividualElectoralDistrict_ID) as SettlementIndividualElectoralDistrict_ID
+            FROM AddressMapping am
+            INNER JOIN Address a ON am.OriginalAddressID = a.ID
+            GROUP BY am.CanonicalAddressID
+        ) tevk_fk ON ca.ID = tevk_fk.CanonicalAddressID
+        LEFT JOIN (
+            SELECT
+                am.CanonicalAddressID,
+                MIN(a.PostalCode_ID) as PostalCode_ID
+            FROM AddressMapping am
+            INNER JOIN Address a ON am.OriginalAddressID = a.ID
+            GROUP BY am.CanonicalAddressID
+        ) pc_fk ON ca.ID = pc_fk.CanonicalAddressID
+        -- Get PollingStation from junction table
         LEFT JOIN (
             SELECT CanonicalAddressID, MIN(PollingStationID) as PollingStationID
             FROM AddressPollingStations
             GROUP BY CanonicalAddressID
-        ) ps ON ca.ID = ps.CanonicalAddressID
-        LEFT JOIN (
-            SELECT CanonicalAddressID, MIN(PIRCode) as PIRCode
-            FROM AddressPIRCodes
-            GROUP BY CanonicalAddressID
-        ) pir ON ca.ID = pir.CanonicalAddressID
+        ) ps_fk ON ca.ID = ps_fk.CanonicalAddressID
+        WHERE c.ID IS NOT NULL
+            AND s.ID IS NOT NULL
+            AND psn_map.PublicSpaceName_ID IS NOT NULL
+            AND pst_map.PublicSpaceType_ID IS NOT NULL
+            AND oevk_fk.NationalIndividualElectoralDistrict_ID IS NOT NULL
+            AND tevk_fk.SettlementIndividualElectoralDistrict_ID IS NOT NULL
+            AND pc_fk.PostalCode_ID IS NOT NULL
+            AND ps_fk.PollingStationID IS NOT NULL
     """).fetchall()
 
     fetch_time = time.time() - fetch_start
-    logger.info(f"    Fetched {len(result):,} rows in {fetch_time:.1f}s ({len(result)/fetch_time:.0f} rows/s)")
+    logger.info(
+        f"    Fetched {len(result):,} rows in {fetch_time:.1f}s ({len(result) / fetch_time:.0f} rows/s)"
+    )
 
     # Write CSV with UUID conversion in Python (batched for progress tracking)
     logger.info(f"    Converting MD5 IDs to UUID5 and writing CSV...")
@@ -820,31 +1222,54 @@ def export_canonical_address_to_csv(
     batch_size = 100000
     processed = 0
 
-    with open(csv_path, 'w', encoding='utf-8', newline='') as f:
+    with open(csv_path, "w", encoding="utf-8", newline="") as f:
         writer = csv.writer(f)
 
-        # Write header
-        writer.writerow([
-            'ID', 'CountyCode', 'SettlementName', 'StreetName', 'HouseNumber',
-            'Building', 'Staircase',
-            'FullAddress', 'AccessibilityFlag', 'Latitude', 'Longitude',
-            'GeocodingQuality', 'GeocodingSource', 'GeocodedAt', 'CreatedAt',
-            'County_ID', 'Settlement_ID', 'PollingStation_ID', 'PIRCode'
-        ])
+        # Write header (PostgreSQL snake_case naming)
+        writer.writerow(
+            [
+                "id",
+                "house_number",
+                "building",
+                "staircase",
+                "full_address",
+                "latitude",
+                "longitude",
+                "geocoding_quality",
+                "geocoding_source",
+                "county_id",
+                "settlement_id",
+                "public_space_name_id",
+                "public_space_type_id",
+                "oevk_id",
+                "tevk_id",
+                "postal_code_id",
+                "polling_station_id",
+            ]
+        )
 
         # Process and write in batches
         for i in range(0, len(result), batch_size):
             batch_start = time.time()
-            batch = result[i:i+batch_size]
+            batch = result[i : i + batch_size]
 
             # Convert MD5 hex IDs to UUID5 in Python
             converted_batch = []
             for row in batch:
                 converted_row = list(row)
-                converted_row[0] = to_uuid5(row[0])   # ID
-                converted_row[15] = to_uuid5(row[15])  # County_ID (was 13, now 15 due to Building/Staircase)
-                converted_row[16] = to_uuid5(row[16])  # Settlement_ID (was 14, now 16)
-                converted_row[17] = to_uuid5(row[17])  # PollingStation_ID (was 15, now 17)
+                converted_row[0] = to_uuid5(row[0])  # ID
+                converted_row[9] = to_uuid5(row[9])  # County_ID
+                converted_row[10] = to_uuid5(row[10])  # Settlement_ID
+                converted_row[11] = to_uuid5(row[11])  # PublicSpaceName_ID
+                converted_row[12] = to_uuid5(row[12])  # PublicSpaceType_ID
+                converted_row[13] = to_uuid5(
+                    row[13]
+                )  # NationalIndividualElectoralDistrict_ID
+                converted_row[14] = to_uuid5(
+                    row[14]
+                )  # SettlementIndividualElectoralDistrict_ID
+                converted_row[15] = to_uuid5(row[15])  # PostalCode_ID
+                converted_row[16] = to_uuid5(row[16])  # PollingStation_ID
                 converted_batch.append(converted_row)
 
             writer.writerows(converted_batch)
@@ -884,7 +1309,8 @@ def export_canonical_address_to_csv(
 def count_csv_rows(csv_path: str) -> int:
     """Count number of rows in CSV file (excluding header)."""
     import csv
-    with open(csv_path, 'r', encoding='utf-8') as f:
+
+    with open(csv_path, "r", encoding="utf-8") as f:
         return sum(1 for _ in csv.reader(f)) - 1  # Exclude header
 
 
@@ -895,7 +1321,7 @@ def generate_chunked_copy_commands(
     csv_dir: str,
     csv_file: str,
     chunk_size: int,
-    columns: str = None
+    columns: str = None,
 ) -> None:
     """Generate COPY commands with chunking for large CSV files.
 
@@ -914,24 +1340,31 @@ def generate_chunked_copy_commands(
     # If small enough, do single COPY
     if row_count <= chunk_size:
         if columns:
-            f.write(f"\\copy {table} {columns} FROM '{csv_dir}/{csv_file}' WITH (FORMAT CSV, HEADER, NULL '');\n")
+            f.write(
+                f"\\copy {table} {columns} FROM '{csv_dir}/{csv_file}' WITH (FORMAT CSV, HEADER, NULL '');\n"
+            )
         else:
-            f.write(f"\\copy {table} FROM '{csv_dir}/{csv_file}' WITH (FORMAT CSV, HEADER, NULL '');\n")
+            f.write(
+                f"\\copy {table} FROM '{csv_dir}/{csv_file}' WITH (FORMAT CSV, HEADER, NULL '');\n"
+            )
         return
 
     # For large files, split into chunks during export
     num_chunks = (row_count + chunk_size - 1) // chunk_size
-    f.write(f"-- Large table with {row_count:,} rows, importing in {num_chunks} chunks of {chunk_size:,} rows\n")
+    f.write(
+        f"-- Large table with {row_count:,} rows, importing in {num_chunks} chunks of {chunk_size:,} rows\n"
+    )
 
     logger.info(f"  Splitting {table} ({row_count:,} rows) into {num_chunks} chunks...")
 
     # Split CSV into chunks
     import csv as csv_module
-    base_name = csv_file.replace('.csv', '')
+
+    base_name = csv_file.replace(".csv", "")
     chunk_files = []
     output_dir = os.path.dirname(csv_path)
 
-    with open(csv_path, 'r', encoding='utf-8') as infile:
+    with open(csv_path, "r", encoding="utf-8") as infile:
         reader = csv_module.reader(infile)
         header = next(reader)
 
@@ -945,7 +1378,7 @@ def generate_chunked_copy_commands(
                 # Start new chunk
                 chunk_filename = f"{base_name}_chunk{chunk_num:04d}.csv"
                 chunk_path = os.path.join(output_dir, chunk_filename)
-                chunk_file_handle = open(chunk_path, 'w', encoding='utf-8', newline='')
+                chunk_file_handle = open(chunk_path, "w", encoding="utf-8", newline="")
                 writer = csv_module.writer(chunk_file_handle)
                 writer.writerow(header)
                 chunk_files.append(chunk_filename)
@@ -966,11 +1399,17 @@ def generate_chunked_copy_commands(
     for i, chunk_filename in enumerate(chunk_files, 1):
         progress_pct = (i / len(chunk_files)) * 100
         rows_imported = min(i * chunk_size, row_count)
-        f.write(f"\\echo '[{i}/{len(chunk_files)}] {progress_pct:.1f}% - Importing {table}: {rows_imported:,}/{row_count:,} rows'\n")
+        f.write(
+            f"\\echo '[{i}/{len(chunk_files)}] {progress_pct:.1f}% - Importing {table}: {rows_imported:,}/{row_count:,} rows'\n"
+        )
         if columns:
-            f.write(f"\\copy {table} {columns} FROM '{csv_dir}/{chunk_filename}' WITH (FORMAT CSV, HEADER, NULL '');\n")
+            f.write(
+                f"\\copy {table} {columns} FROM '{csv_dir}/{chunk_filename}' WITH (FORMAT CSV, HEADER, NULL '');\n"
+            )
         else:
-            f.write(f"\\copy {table} FROM '{csv_dir}/{chunk_filename}' WITH (FORMAT CSV, HEADER, NULL '');\n")
+            f.write(
+                f"\\copy {table} FROM '{csv_dir}/{chunk_filename}' WITH (FORMAT CSV, HEADER, NULL '');\n"
+            )
 
 
 def generate_postgresql_import_script(
@@ -979,7 +1418,7 @@ def generate_postgresql_import_script(
     csv_files: dict,
     config: Config,
     defer_foreign_keys: bool = True,
-    chunk_size: int = 100000
+    chunk_size: int = 100000,
 ) -> None:
     """Generate optimized PostgreSQL import script using COPY command with chunking.
 
@@ -997,25 +1436,37 @@ def generate_postgresql_import_script(
 
     with open(script_path, "w", encoding="utf-8") as f:
         f.write("-- PostgreSQL Optimized Import Script\n")
-        f.write("-- Uses \\copy command for fast data loading (10-50x faster than INSERT)\n")
+        f.write(
+            "-- Uses \\copy command for fast data loading (10-50x faster than INSERT)\n"
+        )
         f.write("-- \n")
         f.write("-- Prerequisites:\n")
         f.write("--   1. PostgreSQL database created\n")
-        f.write("--   2. PostGIS extension enabled: CREATE EXTENSION IF NOT EXISTS postgis;\n")
+        f.write(
+            "--   2. PostGIS extension enabled: CREATE EXTENSION IF NOT EXISTS postgis;\n"
+        )
         f.write("--   3. Schema created: Run schema.sql first\n")
         f.write("--\n")
         f.write("-- Usage: psql -U username -d database -f import_postgresql.sql\n")
         f.write("--\n")
-        f.write("-- Expected import time: 2-5 minutes (vs 30-120 minutes with INSERT)\n")
+        f.write(
+            "-- Expected import time: 2-5 minutes (vs 30-120 minutes with INSERT)\n"
+        )
         f.write("--\n")
-        f.write("-- Note: PostGIS geometries are imported as WKT text then converted to GEOMETRY types\n")
+        f.write(
+            "-- Note: PostGIS geometries are imported as WKT text then converted to GEOMETRY types\n"
+        )
         f.write("--\n\n")
 
         # Performance optimizations (session-level settings only)
         f.write("-- Step 1: Performance optimizations for bulk import\n")
         f.write("SET maintenance_work_mem = '1GB';\n")
-        f.write("SET synchronous_commit = off;  -- Faster, but risk of data loss on crash\n")
-        f.write("-- Note: checkpoint_completion_target requires server-level configuration\n")
+        f.write(
+            "SET synchronous_commit = off;  -- Faster, but risk of data loss on crash\n"
+        )
+        f.write(
+            "-- Note: checkpoint_completion_target requires server-level configuration\n"
+        )
         f.write("\\timing on\n")
         f.write("\n")
 
@@ -1029,43 +1480,98 @@ def generate_postgresql_import_script(
             f.write("-- Foreign keys will be recreated after data import\n")
             f.write("\\echo 'Dropping foreign key constraints...'\n")
 
-            # Drop FKs from Address table
-            f.write("ALTER TABLE Address DROP CONSTRAINT IF EXISTS address_county_id_fkey;\n")
-            f.write("ALTER TABLE Address DROP CONSTRAINT IF EXISTS address_settlement_id_fkey;\n")
+            # Drop FKs from address table (PostgreSQL snake_case naming)
+            f.write(
+                "ALTER TABLE address DROP CONSTRAINT IF EXISTS address_county_id_fkey;\n"
+            )
+            f.write(
+                "ALTER TABLE address DROP CONSTRAINT IF EXISTS address_settlement_id_fkey;\n"
+            )
+            f.write(
+                "ALTER TABLE address DROP CONSTRAINT IF EXISTS address_public_space_name_id_fkey;\n"
+            )
+            f.write(
+                "ALTER TABLE address DROP CONSTRAINT IF EXISTS address_public_space_type_id_fkey;\n"
+            )
+            f.write(
+                "ALTER TABLE address DROP CONSTRAINT IF EXISTS address_oevk_id_fkey;\n"
+            )
+            f.write(
+                "ALTER TABLE address DROP CONSTRAINT IF EXISTS address_tevk_id_fkey;\n"
+            )
+            f.write(
+                "ALTER TABLE address DROP CONSTRAINT IF EXISTS address_postal_code_id_fkey;\n"
+            )
+            f.write(
+                "ALTER TABLE address DROP CONSTRAINT IF EXISTS address_polling_station_id_fkey;\n"
+            )
 
-            # Drop FK from Address table for PollingStation_ID
-            f.write("ALTER TABLE Address DROP CONSTRAINT IF EXISTS address_pollingstation_id_fkey;\n")
-
-            # Drop FKs from other tables
-            f.write("ALTER TABLE Settlement DROP CONSTRAINT IF EXISTS settlement_county_id_fkey;\n")
-            f.write("ALTER TABLE NationalIndividualElectoralDistrict DROP CONSTRAINT IF EXISTS nationalindividualelectoraldistrict_county_id_fkey;\n")
-            f.write("ALTER TABLE SettlementIndividualElectoralDistrict DROP CONSTRAINT IF EXISTS settlementindividualelectoraldistrict_county_id_fkey;\n")
-            f.write("ALTER TABLE SettlementIndividualElectoralDistrict DROP CONSTRAINT IF EXISTS settlementindividualelectoraldistrict_settlement_id_fkey;\n")
-            f.write("ALTER TABLE PollingStation DROP CONSTRAINT IF EXISTS pollingstation_county_id_fkey;\n")
-            f.write("ALTER TABLE PollingStation DROP CONSTRAINT IF EXISTS pollingstation_settlement_id_fkey;\n")
-            f.write("ALTER TABLE PollingStation DROP CONSTRAINT IF EXISTS pollingstation_settlementindividualelectoraldistrict_id_fkey;\n")
-            f.write("ALTER TABLE PollingStation DROP CONSTRAINT IF EXISTS pollingstation_nationalindividualelectoraldistrict_id_fkey;\n")
-            f.write("ALTER TABLE PostalCode_Settlement DROP CONSTRAINT IF EXISTS postalcode_settlement_postalcode_id_fkey;\n")
-            f.write("ALTER TABLE PostalCode_Settlement DROP CONSTRAINT IF EXISTS postalcode_settlement_settlement_id_fkey;\n")
-            f.write("ALTER TABLE SettlementPublicSpaces DROP CONSTRAINT IF EXISTS settlementpublicspaces_settlement_id_fkey;\n")
-            f.write("ALTER TABLE SettlementPublicSpaces DROP CONSTRAINT IF EXISTS settlementpublicspaces_publicspacename_id_fkey;\n")
-            f.write("ALTER TABLE SettlementPublicSpaces DROP CONSTRAINT IF EXISTS settlementpublicspaces_publicspacetype_id_fkey;\n")
+            # Drop FKs from other tables (PostgreSQL snake_case naming)
+            f.write(
+                "ALTER TABLE settlement DROP CONSTRAINT IF EXISTS settlement_county_id_fkey;\n"
+            )
+            f.write("ALTER TABLE oevk DROP CONSTRAINT IF EXISTS oevk_county_id_fkey;\n")
+            f.write("ALTER TABLE tevk DROP CONSTRAINT IF EXISTS tevk_county_id_fkey;\n")
+            f.write(
+                "ALTER TABLE tevk DROP CONSTRAINT IF EXISTS tevk_settlement_id_fkey;\n"
+            )
+            f.write(
+                "ALTER TABLE polling_station DROP CONSTRAINT IF EXISTS polling_station_county_id_fkey;\n"
+            )
+            f.write(
+                "ALTER TABLE polling_station DROP CONSTRAINT IF EXISTS polling_station_settlement_id_fkey;\n"
+            )
+            f.write(
+                "ALTER TABLE polling_station DROP CONSTRAINT IF EXISTS polling_station_tevk_id_fkey;\n"
+            )
+            f.write(
+                "ALTER TABLE polling_station DROP CONSTRAINT IF EXISTS polling_station_oevk_id_fkey;\n"
+            )
+            f.write(
+                "ALTER TABLE postal_code_settlement DROP CONSTRAINT IF EXISTS postal_code_settlement_postal_code_id_fkey;\n"
+            )
+            f.write(
+                "ALTER TABLE postal_code_settlement DROP CONSTRAINT IF EXISTS postal_code_settlement_settlement_id_fkey;\n"
+            )
+            f.write(
+                "ALTER TABLE settlement_public_spaces DROP CONSTRAINT IF EXISTS settlement_public_spaces_settlement_id_fkey;\n"
+            )
+            f.write(
+                "ALTER TABLE settlement_public_spaces DROP CONSTRAINT IF EXISTS settlement_public_spaces_public_space_name_id_fkey;\n"
+            )
+            f.write(
+                "ALTER TABLE settlement_public_spaces DROP CONSTRAINT IF EXISTS settlement_public_spaces_public_space_type_id_fkey;\n"
+            )
             f.write("\n")
 
         # Insert placeholder records
         f.write("-- Step 3: Insert placeholder records for missing foreign keys\n")
         placeholder_uuid = "'00000000-0000-0000-0000-000000000000'"
-        f.write(f"INSERT INTO County (ID, CountyCode, CountyName) VALUES ({placeholder_uuid}, 'UNKNOWN', 'Unknown County') ON CONFLICT DO NOTHING;\n")
-        f.write(f"INSERT INTO Settlement (ID, SettlementCode, SettlementName, County_ID) VALUES ({placeholder_uuid}, 'UNKNOWN', 'Unknown Settlement', {placeholder_uuid}) ON CONFLICT DO NOTHING;\n")
+        f.write(
+            f"INSERT INTO county (id, code, name) VALUES ({placeholder_uuid}, 'UNKNOWN', 'Unknown County') ON CONFLICT DO NOTHING;\n"
+        )
+        f.write(
+            f"INSERT INTO settlement (id, code, name, county_id) VALUES ({placeholder_uuid}, 'UNKNOWN', 'Unknown Settlement', {placeholder_uuid}) ON CONFLICT DO NOTHING;\n"
+        )
 
         if use_postgis:
-            f.write(f"INSERT INTO NationalIndividualElectoralDistrict (ID, OEVK, Name, Center, Polygon, County_ID) VALUES ({placeholder_uuid}, 'UNKNOWN', 'Unknown District', NULL, NULL, {placeholder_uuid}) ON CONFLICT DO NOTHING;\n")
+            f.write(
+                f"INSERT INTO oevk (id, code, name, center, polygon, county_id) VALUES ({placeholder_uuid}, 'UNKNOWN', 'Unknown District', NULL, NULL, {placeholder_uuid}) ON CONFLICT DO NOTHING;\n"
+            )
         else:
-            f.write(f"INSERT INTO NationalIndividualElectoralDistrict (ID, OEVK, Name, Center, Polygon, County_ID) VALUES ({placeholder_uuid}, 'UNKNOWN', 'Unknown District', NULL, NULL, {placeholder_uuid}) ON CONFLICT DO NOTHING;\n")
+            f.write(
+                f"INSERT INTO oevk (id, code, name, center, polygon, county_id) VALUES ({placeholder_uuid}, 'UNKNOWN', 'Unknown District', NULL, NULL, {placeholder_uuid}) ON CONFLICT DO NOTHING;\n"
+            )
 
-        f.write(f"INSERT INTO SettlementIndividualElectoralDistrict (ID, TEVK, Name, County_ID, Settlement_ID) VALUES ({placeholder_uuid}, 'UNKNOWN', 'Unknown District', {placeholder_uuid}, {placeholder_uuid}) ON CONFLICT DO NOTHING;\n")
-        f.write(f"INSERT INTO PostalCode (ID, PostalCode) VALUES ({placeholder_uuid}, '0000') ON CONFLICT DO NOTHING;\n")
-        f.write(f"INSERT INTO PollingStation (ID, PollingStationAddress, SettlementIndividualElectoralDistrict_ID, County_ID, Settlement_ID, NationalIndividualElectoralDistrict_ID, Latitude, Longitude, GeocodingQuality, GeocodingSource, GeocodedAt, MatchedAddress) VALUES ({placeholder_uuid}, 'Unknown Polling Station Address', {placeholder_uuid}, {placeholder_uuid}, {placeholder_uuid}, {placeholder_uuid}, NULL, NULL, NULL, NULL, NULL, NULL) ON CONFLICT DO NOTHING;\n")
+        f.write(
+            f"INSERT INTO tevk (id, code, name, county_id, settlement_id) VALUES ({placeholder_uuid}, 'UNKNOWN', 'Unknown District', {placeholder_uuid}, {placeholder_uuid}) ON CONFLICT DO NOTHING;\n"
+        )
+        f.write(
+            f"INSERT INTO postal_code (id, code) VALUES ({placeholder_uuid}, '0000') ON CONFLICT DO NOTHING;\n"
+        )
+        f.write(
+            f"INSERT INTO polling_station (id, address, tevk_id, county_id, settlement_id, oevk_id, latitude, longitude, geocoding_quality, geocoding_source, matched_address) VALUES ({placeholder_uuid}, 'Unknown Polling Station Address', {placeholder_uuid}, {placeholder_uuid}, {placeholder_uuid}, {placeholder_uuid}, NULL, NULL, NULL, NULL, NULL) ON CONFLICT DO NOTHING;\n"
+        )
         f.write("\n")
 
         # Define import order (respecting foreign key dependencies)
@@ -1087,70 +1593,114 @@ def generate_postgresql_import_script(
         f.write("-- Step 4: Import data using COPY (fast!)\n")
         f.write("\\echo 'Importing data...'\n\n")
 
-        for table in import_order:
-            if table in csv_files:
-                csv_file = os.path.basename(csv_files[table])
+        for duckdb_table in import_order:
+            if duckdb_table in csv_files:
+                csv_file = os.path.basename(csv_files[duckdb_table])
+                # Get PostgreSQL table name
+                pg_table = DUCKDB_TO_POSTGRESQL_TABLE_NAMES.get(
+                    duckdb_table, duckdb_table.lower()
+                )
 
                 # Special handling for PostGIS geometry columns
-                if table == "NationalIndividualElectoralDistrict" and use_postgis:
-                    f.write(f"\\echo 'Importing {table} with PostGIS geometries...'\n")
-                    # Add temporary TEXT columns for WKT import
-                    f.write(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS Center_WKT TEXT;\n")
-                    f.write(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS Polygon_WKT TEXT;\n")
-                    # Import with temp columns
-                    f.write(f"\\copy {table} (ID, OEVK, Name, Center_WKT, Polygon_WKT, County_ID) FROM '{csv_dir}/{csv_file}' WITH (FORMAT CSV, HEADER, NULL '');\n")
-                    # Convert WKT to GEOMETRY - Center points are usually valid
-                    f.write(f"UPDATE {table} SET Center = ST_GeomFromText(Center_WKT, 4326) WHERE Center_WKT IS NOT NULL AND Center_WKT != '';\n")
+                if (
+                    duckdb_table == "NationalIndividualElectoralDistrict"
+                    and use_postgis
+                ):
+                    f.write(
+                        f"\\echo 'Importing {pg_table} with PostGIS geometries...'\n"
+                    )
+                    # Add temporary TEXT columns for WKT import (PostgreSQL snake_case)
+                    f.write(
+                        f"ALTER TABLE {pg_table} ADD COLUMN IF NOT EXISTS center_wkt TEXT;\n"
+                    )
+                    f.write(
+                        f"ALTER TABLE {pg_table} ADD COLUMN IF NOT EXISTS polygon_wkt TEXT;\n"
+                    )
+                    # Import with temp columns (PostgreSQL snake_case)
+                    f.write(
+                        f"\\copy {pg_table} (id, code, name, center_wkt, polygon_wkt, county_id) FROM '{csv_dir}/{csv_file}' WITH (FORMAT CSV, HEADER, NULL '');\n"
+                    )
+                    # Convert WKT to GEOMETRY - center points are usually valid
+                    f.write(
+                        f"UPDATE {pg_table} SET center = ST_GeomFromText(center_wkt, 4326) WHERE center_wkt IS NOT NULL AND center_wkt != '';\n"
+                    )
                     # For polygons, try to fix with ST_MakeValid, skip if completely invalid
                     # This updates row-by-row to avoid transaction abort on invalid geometries
                     f.write(f"DO $$\n")
                     f.write(f"DECLARE\n")
                     f.write(f"  r RECORD;\n")
                     f.write(f"BEGIN\n")
-                    f.write(f"  FOR r IN SELECT ID, Polygon_WKT FROM {table} WHERE Polygon_WKT IS NOT NULL AND Polygon_WKT != '' LOOP\n")
+                    f.write(
+                        f"  FOR r IN SELECT id, polygon_wkt FROM {pg_table} WHERE polygon_wkt IS NOT NULL AND polygon_wkt != '' LOOP\n"
+                    )
                     f.write(f"    BEGIN\n")
-                    f.write(f"      UPDATE {table} SET Polygon = ST_MakeValid(ST_GeomFromText(r.Polygon_WKT, 4326)) WHERE ID = r.ID;\n")
+                    f.write(
+                        f"      UPDATE {pg_table} SET polygon = ST_MakeValid(ST_GeomFromText(r.polygon_wkt, 4326)) WHERE id = r.id;\n"
+                    )
                     f.write(f"    EXCEPTION WHEN OTHERS THEN\n")
                     f.write(f"      -- Skip invalid geometries that can't be fixed\n")
-                    f.write(f"      RAISE NOTICE 'Skipping invalid polygon for ID %', r.ID;\n")
+                    f.write(
+                        f"      RAISE NOTICE 'Skipping invalid polygon for id %', r.id;\n"
+                    )
                     f.write(f"    END;\n")
                     f.write(f"  END LOOP;\n")
                     f.write(f"END $$;\n")
                     # Drop temporary columns
-                    f.write(f"ALTER TABLE {table} DROP COLUMN Center_WKT;\n")
-                    f.write(f"ALTER TABLE {table} DROP COLUMN Polygon_WKT;\n")
-                # Special handling for Address table - has Geometry column added via ALTER TABLE
-                elif table == "Address":
-                    f.write(f"\\echo 'Importing {table}...'\n")
-                    # Use chunked import for large table
-                    csv_path = csv_files[table]
-                    columns = "(ID, CountyCode, SettlementName, StreetName, HouseNumber, Building, Staircase, FullAddress, AccessibilityFlag, Latitude, Longitude, GeocodingQuality, GeocodingSource, GeocodedAt, CreatedAt, County_ID, Settlement_ID, PollingStation_ID, PIRCode)"
-                    generate_chunked_copy_commands(f, table, csv_path, csv_dir, csv_file, chunk_size, columns)
-                # Special handling for PollingStation - also has Geometry column
-                elif table == "PollingStation":
-                    f.write(f"\\echo 'Importing {table}...'\n")
-                    # Get column list from CSV header, excluding Geometry
-                    # For now, we'll list all expected columns explicitly
-                    f.write(f"\\copy {table} (ID, PollingStationAddress, SettlementIndividualElectoralDistrict_ID, County_ID, Settlement_ID, NationalIndividualElectoralDistrict_ID, Latitude, Longitude, GeocodingQuality, GeocodingSource, GeocodedAt, MatchedAddress) FROM '{csv_dir}/{csv_file}' WITH (FORMAT CSV, HEADER, NULL '');\n")
+                    f.write(f"ALTER TABLE {pg_table} DROP COLUMN center_wkt;\n")
+                    f.write(f"ALTER TABLE {pg_table} DROP COLUMN polygon_wkt;\n")
+                # Special handling for address table - has geometry column added via ALTER TABLE
+                elif duckdb_table == "Address":
+                    f.write(f"\\echo 'Importing {pg_table}...'\n")
+                    # Use chunked import for large table (PostgreSQL snake_case naming)
+                    csv_path = csv_files[duckdb_table]
+                    columns = "(id, house_number, building, staircase, full_address, latitude, longitude, geocoding_quality, geocoding_source, county_id, settlement_id, public_space_name_id, public_space_type_id, oevk_id, tevk_id, postal_code_id, polling_station_id)"
+                    generate_chunked_copy_commands(
+                        f, pg_table, csv_path, csv_dir, csv_file, chunk_size, columns
+                    )
+                # Special handling for polling_station - also has geometry column
+                elif duckdb_table == "PollingStation":
+                    f.write(f"\\echo 'Importing {pg_table}...'\n")
+                    # PostgreSQL snake_case naming
+                    f.write(
+                        f"\\copy {pg_table} (id, address, tevk_id, county_id, settlement_id, oevk_id, latitude, longitude, geocoding_quality, geocoding_source, matched_address) FROM '{csv_dir}/{csv_file}' WITH (FORMAT CSV, HEADER, NULL '');\n"
+                    )
                 else:
-                    f.write(f"\\echo 'Importing {table}...'\n")
+                    f.write(f"\\echo 'Importing {pg_table}...'\n")
                     # Use chunked import for all tables
-                    csv_path = csv_files[table]
-                    generate_chunked_copy_commands(f, table, csv_path, csv_dir, csv_file, chunk_size, columns=None)
+                    csv_path = csv_files[duckdb_table]
+                    generate_chunked_copy_commands(
+                        f,
+                        pg_table,
+                        csv_path,
+                        csv_dir,
+                        csv_file,
+                        chunk_size,
+                        columns=None,
+                    )
 
                 f.write("\n")
 
         # Populate PostGIS GEOGRAPHY columns for geocoding (chunked for better performance)
         if geocoding_use_postgis:
-            f.write("-- Step 5: Populate PostGIS GEOGRAPHY columns from geocoding coordinates\n")
-            f.write("-- Using chunked updates with ST_SetSRID + ST_MakePoint for better performance\n")
-            f.write("-- Committing transaction before geometry updates to avoid long locks\n")
+            f.write(
+                "-- Step 5: Populate PostGIS GEOGRAPHY columns from geocoding coordinates\n"
+            )
+            f.write(
+                "-- Using chunked updates with ST_SetSRID + ST_MakePoint for better performance\n"
+            )
+            f.write(
+                "-- Committing transaction before geometry updates to avoid long locks\n"
+            )
             f.write("COMMIT;\n\n")
 
-            # Chunked update for Address table (100k rows per chunk)
+            # Chunked update for address table (100k rows per chunk)
             postgis_chunk_size = 100000
-            f.write(f"-- Update Address.Geometry in chunks of {postgis_chunk_size:,} rows\n")
-            f.write("\\echo 'Populating PostGIS GEOGRAPHY for Address table in chunks...'\n")
+            f.write(
+                f"-- Update address.geometry in chunks of {postgis_chunk_size:,} rows\n"
+            )
+            f.write(
+                "\\echo 'Populating PostGIS GEOGRAPHY for address table in chunks...'\n"
+            )
             f.write("DO $$\n")
             f.write("DECLARE\n")
             f.write("    batch_size INT := 100000;\n")
@@ -1158,78 +1708,140 @@ def generate_postgresql_import_script(
             f.write("    rows_updated INT;\n")
             f.write("BEGIN\n")
             f.write("    LOOP\n")
-            f.write("        UPDATE Address\n")
-            f.write("        SET Geometry = ST_SetSRID(ST_MakePoint(Longitude, Latitude), 4326)::geography\n")
-            f.write("        WHERE Geometry IS NULL\n")
-            f.write("          AND Latitude IS NOT NULL\n")
-            f.write("          AND Longitude IS NOT NULL\n")
-            f.write("          AND ID IN (\n")
-            f.write("              SELECT ID FROM Address\n")
-            f.write("              WHERE Geometry IS NULL\n")
-            f.write("                AND Latitude IS NOT NULL\n")
-            f.write("                AND Longitude IS NOT NULL\n")
+            f.write("        UPDATE address\n")
+            f.write(
+                "        SET geometry = ST_SetSRID(ST_MakePoint(longitude, latitude), 4326)::geography\n"
+            )
+            f.write("        WHERE geometry IS NULL\n")
+            f.write("          AND latitude IS NOT NULL\n")
+            f.write("          AND longitude IS NOT NULL\n")
+            f.write("          AND id IN (\n")
+            f.write("              SELECT id FROM address\n")
+            f.write("              WHERE geometry IS NULL\n")
+            f.write("                AND latitude IS NOT NULL\n")
+            f.write("                AND longitude IS NOT NULL\n")
             f.write("              LIMIT batch_size\n")
             f.write("          );\n")
             f.write("        GET DIAGNOSTICS rows_updated = ROW_COUNT;\n")
             f.write("        total_updated := total_updated + rows_updated;\n")
-            f.write("        RAISE NOTICE 'Updated % addresses (total: %)', rows_updated, total_updated;\n")
+            f.write(
+                "        RAISE NOTICE 'Updated % addresses (total: %)', rows_updated, total_updated;\n"
+            )
             f.write("        EXIT WHEN rows_updated = 0;\n")
             f.write("        COMMIT;\n")
             f.write("    END LOOP;\n")
-            f.write("    RAISE NOTICE 'Completed: % addresses updated with PostGIS geometry', total_updated;\n")
+            f.write(
+                "    RAISE NOTICE 'Completed: % addresses updated with PostGIS geometry', total_updated;\n"
+            )
             f.write("END $$;\n\n")
 
-            f.write("\\echo 'Populating PostGIS GEOGRAPHY columns for PollingStation...'\n")
-            f.write("UPDATE PollingStation\n")
-            f.write("SET Geometry = ST_SetSRID(ST_MakePoint(Longitude, Latitude), 4326)::geography\n")
-            f.write("WHERE Latitude IS NOT NULL AND Longitude IS NOT NULL;\n\n")
+            f.write(
+                "\\echo 'Populating PostGIS GEOGRAPHY columns for polling_station...'\n"
+            )
+            f.write("UPDATE polling_station\n")
+            f.write(
+                "SET geometry = ST_SetSRID(ST_MakePoint(longitude, latitude), 4326)::geography\n"
+            )
+            f.write("WHERE latitude IS NOT NULL AND longitude IS NOT NULL;\n\n")
 
             f.write("-- Begin new transaction for remaining operations\n")
             f.write("BEGIN;\n\n")
 
         # Recreate foreign keys after data import
         if defer_foreign_keys:
-            f.write("-- Step 5.5: Recreate foreign key constraints (deferred for performance)\n")
+            f.write(
+                "-- Step 5.5: Recreate foreign key constraints (deferred for performance)\n"
+            )
             f.write("\\echo 'Recreating foreign key constraints...'\n")
 
-            # Address table FKs
-            f.write("ALTER TABLE Address ADD CONSTRAINT address_county_id_fkey FOREIGN KEY (County_ID) REFERENCES County(ID);\n")
-            f.write("ALTER TABLE Address ADD CONSTRAINT address_settlement_id_fkey FOREIGN KEY (Settlement_ID) REFERENCES Settlement(ID);\n")
+            # address table FKs (PostgreSQL snake_case naming)
+            f.write(
+                "ALTER TABLE address ADD CONSTRAINT address_county_id_fkey FOREIGN KEY (county_id) REFERENCES county(id);\n"
+            )
+            f.write(
+                "ALTER TABLE address ADD CONSTRAINT address_settlement_id_fkey FOREIGN KEY (settlement_id) REFERENCES settlement(id);\n"
+            )
+            f.write(
+                "ALTER TABLE address ADD CONSTRAINT address_public_space_name_id_fkey FOREIGN KEY (public_space_name_id) REFERENCES public_space_name(id);\n"
+            )
+            f.write(
+                "ALTER TABLE address ADD CONSTRAINT address_public_space_type_id_fkey FOREIGN KEY (public_space_type_id) REFERENCES public_space_type(id);\n"
+            )
+            f.write(
+                "ALTER TABLE address ADD CONSTRAINT address_oevk_id_fkey FOREIGN KEY (oevk_id) REFERENCES oevk(id);\n"
+            )
+            f.write(
+                "ALTER TABLE address ADD CONSTRAINT address_tevk_id_fkey FOREIGN KEY (tevk_id) REFERENCES tevk(id);\n"
+            )
+            f.write(
+                "ALTER TABLE address ADD CONSTRAINT address_postal_code_id_fkey FOREIGN KEY (postal_code_id) REFERENCES postal_code(id);\n"
+            )
+            f.write(
+                "ALTER TABLE address ADD CONSTRAINT address_polling_station_id_fkey FOREIGN KEY (polling_station_id) REFERENCES polling_station(id);\n"
+            )
 
-            # Address table PollingStation_ID FK
-            f.write("ALTER TABLE Address ADD CONSTRAINT address_pollingstation_id_fkey FOREIGN KEY (PollingStation_ID) REFERENCES PollingStation(ID);\n")
-
-            # Reference tables FKs
-            f.write("ALTER TABLE Settlement ADD CONSTRAINT settlement_county_id_fkey FOREIGN KEY (County_ID) REFERENCES County(ID);\n")
-            f.write("ALTER TABLE NationalIndividualElectoralDistrict ADD CONSTRAINT nationalindividualelectoraldistrict_county_id_fkey FOREIGN KEY (County_ID) REFERENCES County(ID);\n")
-            f.write("ALTER TABLE SettlementIndividualElectoralDistrict ADD CONSTRAINT settlementindividualelectoraldistrict_county_id_fkey FOREIGN KEY (County_ID) REFERENCES County(ID);\n")
-            f.write("ALTER TABLE SettlementIndividualElectoralDistrict ADD CONSTRAINT settlementindividualelectoraldistrict_settlement_id_fkey FOREIGN KEY (Settlement_ID) REFERENCES Settlement(ID);\n")
-            f.write("ALTER TABLE PollingStation ADD CONSTRAINT pollingstation_county_id_fkey FOREIGN KEY (County_ID) REFERENCES County(ID);\n")
-            f.write("ALTER TABLE PollingStation ADD CONSTRAINT pollingstation_settlement_id_fkey FOREIGN KEY (Settlement_ID) REFERENCES Settlement(ID);\n")
-            f.write("ALTER TABLE PollingStation ADD CONSTRAINT pollingstation_settlementindividualelectoraldistrict_id_fkey FOREIGN KEY (SettlementIndividualElectoralDistrict_ID) REFERENCES SettlementIndividualElectoralDistrict(ID);\n")
-            f.write("ALTER TABLE PollingStation ADD CONSTRAINT pollingstation_nationalindividualelectoraldistrict_id_fkey FOREIGN KEY (NationalIndividualElectoralDistrict_ID) REFERENCES NationalIndividualElectoralDistrict(ID);\n")
-            f.write("ALTER TABLE PostalCode_Settlement ADD CONSTRAINT postalcode_settlement_postalcode_id_fkey FOREIGN KEY (PostalCode_ID) REFERENCES PostalCode(ID);\n")
-            f.write("ALTER TABLE PostalCode_Settlement ADD CONSTRAINT postalcode_settlement_settlement_id_fkey FOREIGN KEY (Settlement_ID) REFERENCES Settlement(ID);\n")
-            f.write("ALTER TABLE SettlementPublicSpaces ADD CONSTRAINT settlementpublicspaces_settlement_id_fkey FOREIGN KEY (Settlement_ID) REFERENCES Settlement(ID);\n")
-            f.write("ALTER TABLE SettlementPublicSpaces ADD CONSTRAINT settlementpublicspaces_publicspacename_id_fkey FOREIGN KEY (PublicSpaceName_ID) REFERENCES PublicSpaceName(ID);\n")
-            f.write("ALTER TABLE SettlementPublicSpaces ADD CONSTRAINT settlementpublicspaces_publicspacetype_id_fkey FOREIGN KEY (PublicSpaceType_ID) REFERENCES PublicSpaceType(ID);\n")
+            # Reference tables FKs (PostgreSQL snake_case naming)
+            f.write(
+                "ALTER TABLE settlement ADD CONSTRAINT settlement_county_id_fkey FOREIGN KEY (county_id) REFERENCES county(id);\n"
+            )
+            f.write(
+                "ALTER TABLE oevk ADD CONSTRAINT oevk_county_id_fkey FOREIGN KEY (county_id) REFERENCES county(id);\n"
+            )
+            f.write(
+                "ALTER TABLE tevk ADD CONSTRAINT tevk_county_id_fkey FOREIGN KEY (county_id) REFERENCES county(id);\n"
+            )
+            f.write(
+                "ALTER TABLE tevk ADD CONSTRAINT tevk_settlement_id_fkey FOREIGN KEY (settlement_id) REFERENCES settlement(id);\n"
+            )
+            f.write(
+                "ALTER TABLE polling_station ADD CONSTRAINT polling_station_county_id_fkey FOREIGN KEY (county_id) REFERENCES county(id);\n"
+            )
+            f.write(
+                "ALTER TABLE polling_station ADD CONSTRAINT polling_station_settlement_id_fkey FOREIGN KEY (settlement_id) REFERENCES settlement(id);\n"
+            )
+            f.write(
+                "ALTER TABLE polling_station ADD CONSTRAINT polling_station_tevk_id_fkey FOREIGN KEY (tevk_id) REFERENCES tevk(id);\n"
+            )
+            f.write(
+                "ALTER TABLE polling_station ADD CONSTRAINT polling_station_oevk_id_fkey FOREIGN KEY (oevk_id) REFERENCES oevk(id);\n"
+            )
+            f.write(
+                "ALTER TABLE postal_code_settlement ADD CONSTRAINT postal_code_settlement_postal_code_id_fkey FOREIGN KEY (postal_code_id) REFERENCES postal_code(id);\n"
+            )
+            f.write(
+                "ALTER TABLE postal_code_settlement ADD CONSTRAINT postal_code_settlement_settlement_id_fkey FOREIGN KEY (settlement_id) REFERENCES settlement(id);\n"
+            )
+            f.write(
+                "ALTER TABLE settlement_public_spaces ADD CONSTRAINT settlement_public_spaces_settlement_id_fkey FOREIGN KEY (settlement_id) REFERENCES settlement(id);\n"
+            )
+            f.write(
+                "ALTER TABLE settlement_public_spaces ADD CONSTRAINT settlement_public_spaces_public_space_name_id_fkey FOREIGN KEY (public_space_name_id) REFERENCES public_space_name(id);\n"
+            )
+            f.write(
+                "ALTER TABLE settlement_public_spaces ADD CONSTRAINT settlement_public_spaces_public_space_type_id_fkey FOREIGN KEY (public_space_type_id) REFERENCES public_space_type(id);\n"
+            )
             f.write("\n")
 
         # Commit transaction
         f.write("-- Step 6: Commit transaction\n")
         f.write("COMMIT;\n\n")
 
-        # Analyze tables
+        # Analyze tables (using PostgreSQL snake_case names)
         f.write("-- Step 7: Analyze tables for query optimization\n")
         f.write("\\echo 'Analyzing tables...'\n")
-        for table in import_order:
-            if table in csv_files:
-                f.write(f"ANALYZE {table};\n")
+        for duckdb_table in import_order:
+            if duckdb_table in csv_files:
+                pg_table = DUCKDB_TO_POSTGRESQL_TABLE_NAMES.get(
+                    duckdb_table, duckdb_table.lower()
+                )
+                f.write(f"ANALYZE {pg_table};\n")
         f.write("\n")
 
         # Summary
         f.write("-- Import complete!\n")
-        f.write("\\echo 'Import complete! Run SELECT COUNT(*) FROM Address; to verify.'\n")
+        f.write(
+            "\\echo 'Import complete! Run SELECT COUNT(*) FROM address; to verify.'\n"
+        )
 
 
 def export_canonical_address_to_postgresql(
@@ -1263,7 +1875,9 @@ def export_canonical_address_to_postgresql(
 
     output_file.write(f"-- Table: Address (exported from CanonicalAddress)\n")
     output_file.write(f"-- Rows: {len(rows)}\n")
-    output_file.write("-- Includes geocoding data (Latitude, Longitude, GeocodingQuality, etc.)\n\n")
+    output_file.write(
+        "-- Includes geocoding data (Latitude, Longitude, GeocodingQuality, etc.)\n\n"
+    )
 
     # Generate INSERT statements
     for row in rows:

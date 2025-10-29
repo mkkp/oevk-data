@@ -281,7 +281,9 @@ class FilePackager:
             raise FileNotFoundError(f"PostgreSQL schema.sql not found in {data_dir}")
 
         if not import_script_path.exists():
-            raise FileNotFoundError(f"PostgreSQL import_postgresql.sql not found in {data_dir}")
+            raise FileNotFoundError(
+                f"PostgreSQL import_postgresql.sql not found in {data_dir}"
+            )
 
         # Get all CSV files from postgresql directory
         csv_files = list(postgresql_dir.glob("*.csv"))
@@ -291,7 +293,9 @@ class FilePackager:
         # Create ZIP archive with STORED method (no compression) for large CSV files
         # CSV files are already text and don't compress well, this makes packaging much faster
         self.logger.logger.info(f"Creating PostgreSQL archive: {archive_name}")
-        self.logger.logger.info(f"  Including {len(csv_files)} CSV files (stored without compression)")
+        self.logger.logger.info(
+            f"  Including {len(csv_files)} CSV files (stored without compression)"
+        )
 
         with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_STORED) as zipf:
             # Add schema and import script
@@ -399,30 +403,30 @@ The optimized COPY-based import is **10-50x faster** than INSERT statements:
 
 ### PostGIS Geography Columns
 
-Address and PollingStation tables include PostGIS GEOGRAPHY columns for geospatial queries:
+address and polling_station tables include PostGIS GEOGRAPHY columns for geospatial queries:
 
 ```sql
 -- Find addresses within 1km of a point
-SELECT * FROM Address
+SELECT * FROM address
 WHERE ST_DWithin(
-    Geometry,
+    geometry,
     ST_GeogFromText('POINT(19.0402 47.4979)'),
     1000
 );
 
 -- Find nearest polling station
-SELECT * FROM PollingStation
-ORDER BY Geometry <-> ST_GeogFromText('POINT(19.0402 47.4979)')
+SELECT * FROM polling_station
+ORDER BY geometry <-> ST_GeogFromText('POINT(19.0402 47.4979)')
 LIMIT 1;
 ```
 
 ### Foreign Key Relationships
 
 All tables are properly normalized with foreign key constraints:
-- `Address.County_ID` → `County.ID`
-- `Address.Settlement_ID` → `Settlement.ID`
-- `AddressPollingStations.AddressID` → `Address.ID`
-- `AddressPIRCodes.AddressID` → `Address.ID`
+- `address.county_id` → `county.id`
+- `address.settlement_id` → `settlement.id`
+- `address.oevk_id` → `oevk.id`
+- `address.tevk_id` → `tevk.id`
 
 ### Indexes
 
@@ -480,7 +484,9 @@ Optimized indexes for common queries:
         """
         cache_path = Path(cache_file)
 
-        archive_name = ReleaseUtils.generate_archive_name("geocoding_cache", release_tag)
+        archive_name = ReleaseUtils.generate_archive_name(
+            "geocoding_cache", release_tag
+        )
         archive_path = self.output_dir / archive_name
 
         # Check if archive already exists
