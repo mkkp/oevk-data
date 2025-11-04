@@ -1,3 +1,34 @@
+<!--
+DOCUMENT METADATA
+=================
+Title: Claude AI Assistant Instructions
+Type: Guide
+Category: AI Configuration
+Status: Active
+Version: 1.0
+Created: 2024-10-01
+Last Updated: 2025-10-29
+Author: Project Team
+
+Related Documents:
+- AGENTS.md (OpenSpec agent instructions)
+- README.md
+
+Related Code:
+- openspec/ (OpenSpec framework)
+
+Dependencies:
+- OpenSpec framework
+
+Keywords: ai-assistant, claude, instructions, openspec, automation, agents
+
+Summary:
+Configuration and instructions for Claude AI assistant working on this project. Defines when to use OpenSpec framework for proposals, specifications, and major changes. Instructs AI to consult openspec/AGENTS.md for change management workflow and conventions.
+
+Audience:
+Claude AI assistant, developers configuring AI behavior.
+-->
+
 <!-- OPENSPEC:START -->
 # OpenSpec Instructions
 

@@ -575,6 +575,18 @@ County (20)
 - Trigram GIN indexes on FullAddress for efficient text search
 - Idempotent loading with conflict resolution
 
+**PostgreSQL Naming Conventions**:
+- **Table Names**: `snake_case` without prefixes (e.g., `address`, `polling_station`, `public_space_name`)
+- **Column Names**: `snake_case` without table name prefixes (e.g., `id`, `county_id`, `settlement_id`, not `Address_ID` or `address_county_id`)
+- **Foreign Keys**: Column name matches referenced column with `_id` suffix (e.g., `county_id` references `county(id)`)
+- **Special Column Names** (Hungarian domain-specific abbreviations):
+  - `NationalIndividualElectoralDistrict` tables/columns must use `oevk` (not `national_individual_electoral_district`)
+  - `SettlementIndividualElectoralDistrict` tables/columns must use `tevk` (not `settlement_individual_electoral_district`)
+  - Examples: `oevk_id` references `oevk(id)`, `tevk_id` references `tevk(id)`
+- **Constraint Names**: Generated with pattern `{table}_{column}_{type}` (e.g., `address_county_id_fkey`, `address_oevk_id_fkey`)
+- **Index Names**: Pattern `idx_{table}_{column(s)}` (e.g., `idx_address_county_id`, `idx_address_oevk_id`)
+- All PostgreSQL CSV exports and database dumps must comply with these naming conventions
+
 **UUID v3 Standard**:
 - Namespace: `uuid.uuid3(uuid.NAMESPACE_DNS, 'oevk.hu')`
 - All entity IDs converted to UUID v3 format for PostgreSQL

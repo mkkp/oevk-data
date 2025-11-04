@@ -97,7 +97,9 @@ class ReleaseWorkflow:
         # - import_postgresql.sql
         validation_status = (
             "passed"
-            if (csv_file_count >= 10 and schema_file.exists() and import_script.exists())
+            if (
+                csv_file_count >= 10 and schema_file.exists() and import_script.exists()
+            )
             else "failed"
         )
 
@@ -110,7 +112,9 @@ class ReleaseWorkflow:
         if not schema_file.exists():
             validation_errors.append("Missing schema.sql in exports directory")
         if not import_script.exists():
-            validation_errors.append("Missing import_postgresql.sql in exports directory")
+            validation_errors.append(
+                "Missing import_postgresql.sql in exports directory"
+            )
 
         # Generate a deterministic pipeline run ID
         pipeline_run_id = f"validation_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -171,15 +175,29 @@ class ReleaseWorkflow:
         except FileNotFoundError as e:
             self.logger.logger.warning(f"PostgreSQL files not found, skipping: {e}")
 
+        # Package PostgreSQL dump if it exists
+        try:
+            postgresql_dump_artifact = self.packager.package_postgresql_dump(
+                self.exports_dir, tag, force=force_rebuild
+            )
+            artifacts.append(postgresql_dump_artifact)
+            self.logger.logger.info("PostgreSQL dump packaged successfully")
+        except FileNotFoundError as e:
+            self.logger.logger.info(f"PostgreSQL dump not found, skipping: {e}")
+        except Exception as e:
+            self.logger.logger.warning(f"Failed to package PostgreSQL dump: {e}")
+
         # Package geocoding cache if it exists
         try:
             # Get cache path from config (supports both cache_db and cache_dir)
             from src.utils.config import get_config
+
             config = get_config()
-            cache_path_config = config.get("nominatim", {}).get("cache_db") or \
-                               config.get("nominatim", {}).get("cache_dir", "data/geocoding_cache")
+            cache_path_config = config.get("nominatim", {}).get(
+                "cache_db"
+            ) or config.get("nominatim", {}).get("cache_dir", "data/geocoding_cache")
             cache_path = Path(cache_path_config)
-            if cache_path.suffix != '.db':
+            if cache_path.suffix != ".db":
                 cache_file = str(cache_path / "geocoding_cache.db")
             else:
                 cache_file = str(cache_path)

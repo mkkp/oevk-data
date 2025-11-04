@@ -1,3 +1,41 @@
+<!--
+DOCUMENT METADATA
+=================
+Title: OEVK Data Transformation Pipeline - Main Documentation
+Type: Guide
+Category: Pipeline
+Status: Active
+Version: 2.0
+Created: 2024-10-01
+Last Updated: 2025-10-29
+Author: Project Team
+
+Related Documents:
+- PostgreSQL Schema (docs/POSTGRESQL_FINAL_SCHEMA.md)
+- Naming Convention (docs/014_POSTGRESQL_NAME_CONVENTION.md)
+- Scripts Documentation (scripts/README.md)
+
+Related Code:
+- src/cli.py (main entry point)
+- src/etl/ (ETL pipeline modules)
+- scripts/load_dump_to_docker.py (database setup)
+
+Dependencies:
+- Python 3.9+
+- DuckDB
+- Polars
+- PostgreSQL 15+ (optional)
+- Docker (optional for database)
+
+Keywords: oevk, etl-pipeline, hungarian-addresses, electoral-data, data-transformation, postgresql, duckdb, geocoding, postgis
+
+Summary:
+Complete documentation for the OEVK Data Transformation Pipeline - a Python-based ETL system processing 3.3M+ Hungarian electoral addresses from authoritative government sources. Handles ingestion, transformation, deduplication, geocoding, and export to multiple formats (DuckDB, PostgreSQL, CSV). Includes public space entity extraction, PostGIS spatial support, automated release workflow, and comprehensive data quality features. Production-ready with 98.6% performance improvement.
+
+Audience:
+Developers, data engineers, database administrators, end users setting up and using the OEVK data pipeline.
+-->
+
 # OEVK Data Transformation Pipeline
 
 A Python-based ETL pipeline for processing Hungarian electoral address data from authoritative sources into normalized, queryable datasets with partitioned exports and public space entity extraction.
@@ -409,7 +447,87 @@ gunzip -c exports/oevk_db_20251026_130300.sql.gz | \
 # during pipeline run, or import directly to a container with more storage
 ```
 
-**Option C: Manual Import with psql**
+**Option C: Load Latest Dump to Docker (Fastest)**
+
+If you already have a dump file, use the standalone script to quickly load it into a Docker PostGIS container:
+
+```bash
+# Load latest dump with default settings (finds newest dump automatically)
+python scripts/load_dump_to_docker.py
+
+# This will:
+# 1. Find the latest .sql.gz dump in exports/ directory
+# 2. Create Docker container 'oevk-postgresql' on port 5432 (or auto-find available port)
+# 3. Wait for PostgreSQL to be ready
+# 4. Apply performance optimizations (increased shared_buffers, work_mem, etc.)
+# 5. Create database 'oevk' with PostGIS extension
+# 6. Load the dump using streaming (2-5 minutes for large dumps)
+# 7. Verify import by checking row counts
+# 8. Display connection information
+
+# Expected output:
+# === Step 1/7: Finding dump file ===
+# ✓ Found dump: exports/oevk_db_20251029091200.sql.gz
+# INFO:   Size: 554.3 MB
+# INFO:   Modified: 2025-10-29 09:41:22
+# === Step 2/7: Setting up Docker container ===
+# INFO: Creating PostgreSQL container 'oevk-postgresql'...
+# ✓ Container 'oevk-postgresql' created successfully
+# === Step 3/7: Waiting for PostgreSQL ===
+# ✓ PostgreSQL ready after 0.7s
+# === Step 4/7: Optimizing PostgreSQL settings ===
+# INFO: Applying performance optimizations...
+# INFO: Restarting PostgreSQL to apply settings...
+# ✓ PostgreSQL ready after 0.1s
+# ✓ Performance optimizations applied
+# === Step 5/7: Creating database ===
+# ✓ Database 'oevk' created
+# ✓ PostGIS and pg_trgm extensions enabled
+# === Step 6/7: Loading dump ===
+# INFO: Importing data (this may take several minutes)...
+# ✓ Dump loaded successfully
+# === Step 7/7: Verifying import ===
+# ✓ address                         3,264,270 rows
+# ✓ county                                  21 rows
+# ✓ settlement                           3,178 rows
+# Total rows:                        3,309,094
+# ✓ Import verification passed
+#
+# === Connection Information ===
+# Container:  oevk-postgresql
+# Host:       localhost
+# Port:       5432
+# Database:   oevk
+# User:       oevk
+# Password:   oevk
+#
+# Connect with psql:
+#   docker exec -it oevk-postgresql psql -U oevk -d oevk
+
+# Options:
+# --dump-file: Load specific dump file
+python scripts/load_dump_to_docker.py --dump-file exports/oevk_db_20251029091200.sql.gz
+
+# --container: Custom container name
+python scripts/load_dump_to_docker.py --container my-oevk-db
+
+# --port: Specific port (default: auto-detect)
+python scripts/load_dump_to_docker.py --port 5433
+
+# --drop-database: Drop and recreate database
+python scripts/load_dump_to_docker.py --drop-database
+
+# --start-only: Only create container without loading dump
+python scripts/load_dump_to_docker.py --start-only
+
+# Connect to the database:
+docker exec -it oevk-postgresql psql -U oevk -d oevk
+
+# Connection string for applications:
+postgresql://oevk:oevk@localhost:5432/oevk
+```
+
+**Option D: Manual Import with psql**
 
 ```bash
 # Set up local PostgreSQL with PostGIS
@@ -430,7 +548,7 @@ cd exports
 psql -h localhost -p 5432 -U oevk -d oevk_test -f import_postgresql.sql
 
 # Verify import
-psql -h localhost -p 5432 -U oevk -d oevk_test -c "SELECT COUNT(*) FROM Address;"
+psql -h localhost -p 5432 -U oevk -d oevk_test -c "SELECT COUNT(*) FROM address;"
 # Expected: 3,323,113
 ```
 
@@ -662,6 +780,59 @@ oevk-data/
 └── specs/                 # Specifications and documentation
 ```
 
+### Key Files
+
+#### Configuration & Entry Points
+- **`main.py`** - Main entry point for the ETL pipeline
+- **`src/release/create_release.py`** - GitHub release creation script
+- **`.env.example`** - Environment configuration template
+- **`config.json`** - Runtime configuration (geocoding, PostgreSQL, exports)
+
+#### Core ETL Modules
+- **`src/etl/transform_optimized.py`** - Main ETL orchestrator with deduplication logic
+- **`src/etl/ingest.py`** - Data ingestion from CSV and JSON sources
+- **`src/etl/export.py`** - PostgreSQL schema generation and CSV export
+- **`src/etl/geocode.py`** - Address geocoding with Nominatim integration
+- **`src/etl/hashing.py`** - UUID generation and ID hashing functions
+- **`src/etl/models.py`** - Data models and type definitions
+
+#### Database & Schema
+- **`src/database/schema.sql`** - DuckDB schema definition (source of truth)
+- **`exports/schema.sql`** - Generated PostgreSQL schema (auto-generated)
+- **`src/database/postgresql_import.sql`** - PostgreSQL import script with FK optimization
+
+#### Documentation
+- **`README.md`** - This file (main documentation)
+- **`docs/POSTGRESQL_FINAL_SCHEMA.md`** - Complete PostgreSQL schema reference
+- **`docs/014_POSTGRESQL_NAME_CONVENTION.md`** - v014 naming convention specification
+- **`docs/011_RESOLVE_ADDRESS_COORDINATE.md`** - Address geocoding specification
+- **`docs/010_ADD_POSTGIST_SUPPORT.md`** - PostGIS integration specification
+
+#### Testing & Quality
+- **`tests/contract/test_exports_contract.py`** - Contract tests for export validation
+- **`tests/integration/test_transform_integration.py`** - End-to-end pipeline tests
+- **`tests/unit/test_hashing.py`** - UUID generation unit tests
+- **`pytest.ini`** - Pytest configuration
+
+#### Project Management
+- **`PROJECT.md`** - Project conventions and coding standards
+- **`.claude/commands/`** - Custom slash commands for development workflows
+- **`openspec/`** - OpenSpec change proposal system
+  - **`openspec/AGENTS.md`** - OpenSpec workflow instructions
+  - **`openspec/001_template.md`** - Proposal template
+
+#### Data Files (Generated)
+- **`data/oevk.db`** - DuckDB database (created during pipeline execution)
+- **`data/staging/`** - Raw source data (oevk.json, Korzet_allomany_orszagos.csv)
+- **`exports/*.csv`** - Generated CSV exports (county.csv, settlement.csv, address.csv, etc.)
+- **`exports/schema.sql`** - Generated PostgreSQL schema
+
+#### Release Artifacts (GitHub Releases)
+- **`oevk-data-full-vX.Y.Z.tar.gz`** - Complete dataset with all tables
+- **`oevk-data-canonical-only-vX.Y.Z.tar.gz`** - Canonical addresses only (smaller)
+- **`oevk-postgresql-sql-YYYYMMDD_HHMMSS.tar.gz`** - PostgreSQL import scripts
+- **`RELEASE_NOTES.md`** - Auto-generated release notes with checksums
+
 ## Usage
 
 ### Running the Transform Locally
@@ -820,6 +991,40 @@ python src/cli.py export
    - Replaced by CSV COPY method for 10-50x speed improvement
    - Note: Legacy data.sql generation has been removed in favor of fast CSV import
 
+#### PostgreSQL Naming Conventions (v014)
+
+**All PostgreSQL identifiers follow snake_case naming as of Change 014:**
+
+- **Table Names**: `snake_case` without prefixes
+  - Examples: `address`, `polling_station`, `public_space_name`, `oevk`, `tevk`
+  
+- **Column Names**: `snake_case` **WITHOUT table name prefixes** (critical rule)
+  - ✅ Correct: `county.code`, `county.name`, `settlement.code`, `settlement.name`
+  - ❌ Incorrect: `county.county_code`, `settlement.settlement_code`, `settlement.settlement_name`
+  - ✅ Correct: `oevk.code`, `tevk.code`, `postal_code.code`, `polling_station.address`
+  - ❌ Incorrect: `oevk.oevk_code`, `postal_code.postal_code`, `polling_station.polling_station_address`
+  - ✅ Correct: `public_space_name.name`, `public_space_type.name`
+  - Foreign key columns DO have prefixes: `county_id`, `settlement_id`, `oevk_id`, `tevk_id`
+  
+- **Special Hungarian Abbreviations**:
+  - `NationalIndividualElectoralDistrict` → `oevk` (Országos Egyéni Választókerület)
+  - `SettlementIndividualElectoralDistrict` → `tevk` (Települési Egyéni Választókerület)
+  
+- **Foreign Keys**: All address table FKs are NOT NULL for data quality
+  - Required FKs: `county_id`, `settlement_id`, `public_space_name_id`, `public_space_type_id`, `oevk_id`, `tevk_id`, `postal_code_id`, `polling_station_id`
+  
+- **Removed Columns**: Redundant text fields removed in favor of FK relationships
+  - ❌ `StreetName`, `CountyCode`, `SettlementName`, `AccessibilityFlag`, `PIRCode`, `created_at`, `geocoded_at`
+  - ✅ Use FK joins to get related data
+
+**Key Changes in Address Table:**
+- All foreign keys now properly enforced with NOT NULL constraints
+- Public space information accessed via `public_space_name_id` and `public_space_type_id` FKs
+- Timestamp columns removed (not user-facing metadata)
+- Full adherence to 3NF normalization (no transitive dependencies)
+
+See `docs/014_POSTGRESQL_NAME_CONVENTION.md` for complete specification.
+
 #### Fast PostgreSQL Import (CSV COPY Method)
 
 The recommended method uses PostgreSQL's `\copy` command for 10-50x faster data loading with optimized export:
@@ -837,16 +1042,16 @@ cd exports
 psql -d oevk_data -f import_postgresql.sql
 
 # Verify import
-psql -d oevk_data -c "SELECT COUNT(*) FROM Address;"
+psql -d oevk_data -c "SELECT COUNT(*) FROM address;"
 #  count  
 # ---------
 #  3323113
 
-# Verify UUID format
-psql -d oevk_data -c "SELECT ID, CountyCode, SettlementName FROM Address LIMIT 3;"
-#                  id                  | countycode | settlementname 
-# -------------------------------------+------------+----------------
-#  bf6eba22-228c-54bb-9b65-851efd03bc6b | 10         | Ostoros
+# Verify UUID format and snake_case column names
+psql -d oevk_data -c "SELECT id, full_address FROM address LIMIT 3;"
+#                  id                  |        full_address        
+# -------------------------------------+----------------------------
+#  bf6eba22-228c-54bb-9b65-851efd03bc6b | Ostoros, Kossuth út 1.
 #  32167d15-0b78-5053-8d4c-8326c1cc6f25 | 12         | Komárom
 ```
 
@@ -926,6 +1131,83 @@ export POSTGRES_USER=oevk
 export POSTGRES_PASSWORD=oevk
 ```
 
+#### Performance Considerations: macOS Architecture (x86 vs M1/ARM)
+
+**Significant performance differences exist when running PostgreSQL/PostGIS in Docker on different macOS architectures:**
+
+**x86 (Intel) macOS:**
+- Docker runs **natively** without translation layer
+- PostgreSQL/PostGIS containers execute at native speed
+- **Expected import time**: 25-35 minutes for 3.3M addresses
+- **Recommended**: Use Docker setup as documented above
+
+**M1/M2/M3 (Apple Silicon) macOS:**
+- Docker uses **Rosetta 2 translation** for x86 images (postgis/postgis:15-3.3)
+- PostgreSQL operations run **significantly slower** (2-5x slower)
+- **Expected import time**: 60-120 minutes for 3.3M addresses (vs 25-35 min on x86)
+- **Root cause**: Rosetta 2 translation overhead for database-intensive operations
+
+**Recommended Solutions for M1/ARM Users:**
+
+1. **Use Native ARM PostgreSQL** (Fastest):
+   ```bash
+   # Install PostgreSQL with Homebrew (native ARM build)
+   brew install postgresql@15 postgis
+   
+   # Start PostgreSQL service
+   brew services start postgresql@15
+   
+   # Create database and enable PostGIS
+   createdb oevk
+   psql -d oevk -c "CREATE EXTENSION IF NOT EXISTS postgis;"
+   
+   # Import data (2-5 minutes instead of 60-120 minutes)
+   psql -d oevk -f exports/schema.sql
+   cd exports && psql -d oevk -f import_postgresql.sql
+   ```
+
+2. **Use ARM-compatible Docker Image** (Alternative):
+   ```bash
+   # Use ARM64-compatible PostGIS image
+   docker run -d \
+     --name oevk-postgresql \
+     --platform linux/arm64 \
+     -e POSTGRES_DB=oevk \
+     -e POSTGRES_USER=oevk \
+     -e POSTGRES_PASSWORD=oevk \
+     -p 5432:5432 \
+     postgis/postgis:15-3.3-alpine
+   
+   # Note: Some Alpine-based ARM images may have compatibility issues
+   # Test thoroughly before using in production
+   ```
+
+3. **Remote PostgreSQL Instance** (Cloud):
+   - Use cloud-hosted PostgreSQL (AWS RDS, Google Cloud SQL, Azure Database)
+   - No architecture limitations, consistent performance
+   - Best for production deployments
+
+**Performance Comparison:**
+
+| Architecture | Docker Setup | Import Time (3.3M rows) | Relative Speed |
+|--------------|--------------|------------------------|----------------|
+| x86 macOS | Docker (native) | 25-35 minutes | 1.0x (baseline) |
+| M1/ARM macOS | Docker (Rosetta 2) | 60-120 minutes | 0.3-0.5x (2-3x slower) |
+| M1/ARM macOS | Homebrew PostgreSQL | 25-35 minutes | 1.0x (native speed) |
+| x86 macOS | Homebrew PostgreSQL | 20-30 minutes | 1.1x (slightly faster) |
+
+**Detection and Warnings:**
+
+The CLI automatically detects your architecture and provides warnings:
+
+```bash
+# On M1/ARM macOS with Docker:
+python src/cli.py db verify
+# WARNING: Running on Apple Silicon (arm64) with x86 Docker image
+# WARNING: Expect 2-5x slower performance due to Rosetta 2 translation
+# RECOMMENDATION: Use native Homebrew PostgreSQL for faster imports
+```
+
 #### PostgreSQL Features
 
 - **UUID5 Primary Keys**: All ID columns converted from MD5 hex to UUID5 format with OEVK namespace
@@ -974,33 +1256,33 @@ docker-compose up -d
 
 ```sql
 -- Find OEVK containing a GPS coordinate (point-in-polygon)
-SELECT OEVK, Name
-FROM NationalIndividualElectoralDistrict
-WHERE ST_Contains(Polygon, ST_SetSRID(ST_MakePoint(19.0402, 47.4979), 4326));
+SELECT code, name
+FROM oevk
+WHERE ST_Contains(polygon, ST_SetSRID(ST_MakePoint(19.0402, 47.4979), 4326));
 
 -- Calculate distance between OEVK centers (in kilometers)
 SELECT 
-    a.OEVK, b.OEVK,
+    a.code, b.code,
     ST_Distance(
-        ST_Transform(a.Center, 3857), 
-        ST_Transform(b.Center, 3857)
+        ST_Transform(a.center, 3857), 
+        ST_Transform(b.center, 3857)
     ) / 1000 as distance_km
-FROM NationalIndividualElectoralDistrict a, 
-     NationalIndividualElectoralDistrict b
-WHERE a.ID != b.ID
+FROM oevk a, 
+     oevk b
+WHERE a.id != b.id
 LIMIT 10;
 
 -- Calculate OEVK area in square kilometers
-SELECT OEVK, Name,
-    ST_Area(ST_Transform(Polygon, 3857)) / 1000000 as area_km2
-FROM NationalIndividualElectoralDistrict
+SELECT code, name,
+    ST_Area(ST_Transform(polygon, 3857)) / 1000000 as area_km2
+FROM oevk
 ORDER BY area_km2 DESC;
 
 -- Find adjacent OEVKs (sharing a boundary)
-SELECT a.OEVK, b.OEVK
-FROM NationalIndividualElectoralDistrict a
-CROSS JOIN NationalIndividualElectoralDistrict b
-WHERE a.ID < b.ID AND ST_Touches(a.Polygon, b.Polygon);
+SELECT a.code, b.code
+FROM oevk a
+CROSS JOIN oevk b
+WHERE a.id < b.id AND ST_Touches(a.polygon, b.polygon);
 ```
 
 **Performance Benefits:**
@@ -1015,64 +1297,90 @@ For detailed PostGIS implementation documentation, see [docs/010_ADD_POSTGIST_SU
 
 **AddressFullView:**
 
-The schema includes a comprehensive view that joins the `Address` table with all foreign key tables, providing a denormalized representation of the data:
+The schema provides clean access to address data through joins with all foreign key tables:
 
 ```sql
--- View structure (28 columns)
-CREATE OR REPLACE VIEW AddressFullView AS
+-- Example comprehensive view showing all address relationships
+CREATE OR REPLACE VIEW address_full_view AS
 SELECT
     -- Primary and foreign keys
-    a.ID AS address_id,
-    c.ID AS county_id,
-    s.ID AS settlement_id,
-    oevk.ID AS national_individual_electoral_district_id,
-    tevk.ID AS settlement_individual_electoral_district_id,
-    ps.ID AS polling_station_id,
-    pc.ID AS postal_code_id,
+    a.id AS address_id,
+    a.county_id,
+    a.settlement_id,
+    a.oevk_id,
+    a.tevk_id,
+    a.polling_station_id,
+    a.postal_code_id,
     
-    -- Human-readable data (new model naming convention)
-    c.CountyCode AS county_code,
-    c.CountyName AS county_name,
-    s.SettlementCode AS settlement_code,
-    s.SettlementName AS settlement_name,
-    oevk.OEVK AS oevk_code,
-    oevk.Name AS oevk_name,
-    tevk.TEVK AS tevk_code,
-    tevk.Name AS tevk_name,
-    ps.PollingStationAddress AS polling_station_address,
-    pc.PostalCode AS postal_code,
-    a.PublicSpaceName AS public_space_name,
-    a.PublicSpaceType AS public_space_type,
-    a.HouseNumber AS house_number,
-    a.Building AS building,
-    a.Staircase AS staircase,
-    a.FullAddress AS full_address,
-    -- ... and more
-FROM Address a
-JOIN County c ON a.County_ID = c.ID
-JOIN Settlement s ON a.Settlement_ID = s.ID
--- ... additional joins
+    -- Denormalized data from related tables
+    c.code AS county_code,
+    c.name AS county_name,
+    s.code AS settlement_code,
+    s.name AS settlement_name,
+    oevk.code AS oevk_code,
+    oevk.name AS oevk_name,
+    tevk.code AS tevk_code,
+    tevk.name AS tevk_name,
+    ps.address AS polling_station_address,
+    pc.code AS postal_code,
+    psn.name AS public_space_name,
+    pst.name AS public_space_type,
+    
+    -- Address components
+    a.house_number,
+    a.building,
+    a.staircase,
+    a.full_address,
+    a.latitude,
+    a.longitude,
+    a.geocoding_quality
+FROM address a
+JOIN county c ON a.county_id = c.id
+JOIN settlement s ON a.settlement_id = s.id
+JOIN oevk ON a.oevk_id = oevk.id
+JOIN tevk ON a.tevk_id = tevk.id
+JOIN polling_station ps ON a.polling_station_id = ps.id
+JOIN postal_code pc ON a.postal_code_id = pc.id
+JOIN public_space_name psn ON a.public_space_name_id = psn.id
+JOIN public_space_type pst ON a.public_space_type_id = pst.id;
 ```
 
-**Example queries using AddressFullView:**
+**Example queries using address with joins:**
 ```sql
 -- Substring search (case-insensitive)
-SELECT * FROM AddressFullView WHERE full_address ILIKE '%Budapest%';
+SELECT a.*, c.name as county_name, s.name as settlement_name 
+FROM address a
+JOIN county c ON a.county_id = c.id
+JOIN settlement s ON a.settlement_id = s.id
+WHERE a.full_address ILIKE '%Budapest%';
 
 -- Find addresses by settlement
-SELECT address_id, full_address, postal_code
-FROM AddressFullView
-WHERE settlement_name = 'Budapest I';
+SELECT a.id, a.full_address, pc.code as postal_code
+FROM address a
+JOIN settlement s ON a.settlement_id = s.id
+JOIN postal_code pc ON a.postal_code_id = pc.id
+WHERE s.name = 'Budapest I';
 
 -- Search by street name and type
-SELECT * FROM AddressFullView 
-WHERE public_space_name = 'Dózsa' 
-  AND public_space_type = 'utca';
+SELECT a.*, psn.name as street_name, pst.name as street_type
+FROM address a
+JOIN public_space_name psn ON a.public_space_name_id = psn.id
+JOIN public_space_type pst ON a.public_space_type_id = pst.id
+WHERE psn.name = 'Dózsa' 
+  AND pst.name = 'utca';
 
--- Get all foreign key IDs for integration
-SELECT address_id, county_id, settlement_id, polling_station_id
-FROM AddressFullView
-WHERE postal_code = '1014';
+-- Get all foreign key IDs for integration with electoral districts
+SELECT a.id, a.county_id, a.settlement_id, 
+       a.oevk_id, a.tevk_id, a.polling_station_id,
+       c.code as county_code, s.code as settlement_code,
+       oevk.code as oevk_code, tevk.code as tevk_code
+FROM address a
+JOIN county c ON a.county_id = c.id
+JOIN settlement s ON a.settlement_id = s.id
+JOIN oevk ON a.oevk_id = oevk.id
+JOIN tevk ON a.tevk_id = tevk.id
+JOIN postal_code pc ON a.postal_code_id = pc.id
+WHERE pc.code = '1014';
 ```
 
 #### Standalone PostgreSQL Loader
@@ -1162,18 +1470,17 @@ When running the transformation stage locally, the pipeline:
 After successful transformation, you should see:
 
 ```
-County: 20 rows
-Settlement: 3,177 rows  
-NationalIndividualElectoralDistrict: 106 rows
-SettlementIndividualElectoralDistrict: 4,677 rows
-PollingStation: 8,555 rows
-Address: 3,336,202 rows (original)
-CanonicalAddress: 3,323,118 rows (deduplicated with 0.39% reduction)
-PostalCode: 3,106 rows
-PostalCode_Settlement: 3,106 rows
-PublicSpaceName: 25,117 rows
-PublicSpaceType: 148 rows
-SettlementPublicSpaces: 122,524 rows
+county: 20 rows
+settlement: 3,177 rows  
+oevk: 106 rows
+tevk: 4,677 rows
+polling_station: 8,555 rows
+address: 3,323,118 rows (deduplicated canonical addresses)
+postal_code: 3,106 rows
+postal_code_settlement: 3,106 rows
+public_space_name: 25,117 rows
+public_space_type: 148 rows
+settlement_public_spaces: 122,524 rows
 ```
 
 ### Release Artifacts
@@ -1181,16 +1488,16 @@ SettlementPublicSpaces: 122,524 rows
 Each release creates four main artifacts:
 
 1. **CSV Archive** (`oevk-data-csv-{tag}.zip`): Contains all CSV files
-   - `{run_tag}_Address/` - Directory containing address files split by settlement:
-     - `Address_001_Aba.csv` - **Canonical deduplicated addresses** (UUID v3 format)
-     - `OriginalAddress_001_Aba.csv` - All original addresses with canonical references
-   - `Settlements.csv` - Settlement information
-   - `Counties.csv` - County data
-   - `polling_stations.csv` - Polling station details
-   - `electoral_districts.csv` - Electoral district information
-   - `PublicSpaceName.csv` - 25,117 unique public space names
-   - `PublicSpaceType.csv` - 148 unique public space types
-   - `SettlementPublicSpaces.csv` - 122,524 settlement-public space relationships
+   - `{run_tag}_address/` - Directory containing address files split by settlement:
+     - `address_001_Aba.csv` - **Canonical deduplicated addresses** (UUID format)
+   - `settlement.csv` - Settlement information (3,177 rows)
+   - `county.csv` - County data (20 rows)
+   - `polling_station.csv` - Polling station details (8,555 rows)
+   - `oevk.csv` - National electoral districts (106 rows)
+   - `tevk.csv` - Settlement electoral districts (4,677 rows)
+   - `public_space_name.csv` - 25,117 unique public space names
+   - `public_space_type.csv` - 148 unique public space types
+   - `settlement_public_spaces.csv` - 122,524 settlement-public space relationships
 
 2. **Database Archive** (`oevk-data-db-{tag}.zip`): Contains main transformed database
    - `oevk.db` - Complete relational database with all tables including public space entities and canonical addresses
@@ -1214,32 +1521,32 @@ Each release creates four main artifacts:
 The pipeline exports addresses in two formats. **By default, only canonical addresses are exported.** Use `--export-original-addresses` to also export original addresses.
 
 #### Canonical Addresses (Deduplicated) - Always Exported
-- **Files**: `Address_{settlement_code}_{settlement_name}.csv`
-- **IDs**: UUID v3 with 'oevk.hu' namespace
-- **Structure**: Same as OriginalAddress + `OriginalAddressCount` column
-- **Content**: Only unique canonical addresses (one per unique formatted address)
-- **Columns** (16 total):
-  1. `ID` - Canonical address UUID v3
-  2. `Sequence` - Minimum sequence from merged addresses
-  3. `OriginalOrder` - Minimum original order from merged addresses
-  4. `FullAddress` - Formatted Hungarian address (e.g., "Ady Endre utca 1.")
-  5. `PublicSpaceName` - Street name without type (e.g., "Ady Endre")
-  6. `PublicSpaceType` - Street type from original address (e.g., "utca", "út", "tér")
-  7. `HouseNumber` - House number with leading zeros (e.g., "000001")
-  8. `Building` - Building identifier from original address (cleaned: zero-only → empty string)
-  9. `Staircase` - Staircase identifier from original address (cleaned: zero-only → empty string)
-  10. `PostalCode_ID` - Postal code UUID v3
-  11. `PollingStation_ID` - Polling station UUID v3
-  12. `SettlementIndividualElectoralDistrict_ID` - TEVK UUID v3
-  13. `County_ID` - County UUID v3
-  14. `Settlement_ID` - Settlement UUID v3
-  15. `NationalIndividualElectoralDistrict_ID` - OEVK UUID v3
-  16. **`OriginalAddressCount`** - Number of original addresses merged into this canonical address
+- **Files**: `address_{settlement_code}_{settlement_name}.csv`
+- **IDs**: UUID v5 format (converted from MD5 hash)
+- **Content**: Only unique canonical addresses (deduplicated)
+- **Columns** (17 total):
+  1. `id` - Canonical address UUID
+  2. `county_id` - County UUID (FK, NOT NULL)
+  3. `settlement_id` - Settlement UUID (FK, NOT NULL)
+  4. `public_space_name_id` - Street name UUID (FK, NOT NULL)
+  5. `public_space_type_id` - Street type UUID (FK, NOT NULL)
+  6. `oevk_id` - National electoral district UUID (FK, NOT NULL)
+  7. `tevk_id` - Settlement electoral district UUID (FK, NOT NULL)
+  8. `postal_code_id` - Postal code UUID (FK, NOT NULL)
+  9. `polling_station_id` - Polling station UUID (FK, NOT NULL)
+  10. `house_number` - House number (e.g., "1", "23/A")
+  11. `building` - Building identifier
+  12. `staircase` - Staircase identifier
+  13. `full_address` - Complete formatted address
+  14. `latitude` - WGS 84 latitude (if geocoded)
+  15. `longitude` - WGS 84 longitude (if geocoded)
+  16. `geocoding_quality` - Geocoding quality level (exact, street, settlement, failed)
+  17. `geocoding_source` - Geocoding source (nominatim_local)
 
-- **Field Cleaning Rules**:
-  - `PublicSpaceType`, `Building`, `Staircase`: Retrieved from original Address records via `AddressMapping` join
-  - `Building`/`Staircase` zero-only cleaning: Values containing only zeros (`'0'`, `'00'`, `'000'`) converted to empty string
-  - NULL handling: NULL/empty values exported as empty strings in CSV
+- **Field Notes**:
+  - All 8 foreign key columns are NOT NULL (enforces data quality)
+  - Timestamp columns (`created_at`, `geocoded_at`) removed in v014
+  - Redundant text columns (`street_name`, `county_code`, `settlement_name`) removed - use FK joins instead
 
 - **Example**:
   ```csv
@@ -1651,31 +1958,28 @@ NOMINATIM_PBF_URL=https://download.geofabrik.de/europe/hungary-latest.osm.pbf
 
 Geocoding adds the following columns to tables:
 
-#### CanonicalAddress Table
+#### Address Table
 ```sql
-Latitude REAL,                  -- WGS 84 latitude (-90 to 90)
-Longitude REAL,                 -- WGS 84 longitude (-180 to 180)
-GeocodingQuality TEXT,          -- exact, street, settlement, failed
-GeocodingSource TEXT,           -- nominatim_local
-GeocodedAt TIMESTAMP,           -- When geocoding was performed
-CreatedAt TIMESTAMP,            -- When address was created
+latitude REAL,                  -- WGS 84 latitude (-90 to 90)
+longitude REAL,                 -- WGS 84 longitude (-180 to 180)
+geocoding_quality TEXT,         -- exact, street, settlement, failed
+geocoding_source TEXT,          -- nominatim_local
 
 -- Indexes for efficient coordinate queries
-CREATE INDEX idx_CanonicalAddress_Coordinates ON CanonicalAddress(Latitude, Longitude);
-CREATE INDEX idx_CanonicalAddress_Quality ON CanonicalAddress(GeocodingQuality);
+CREATE INDEX idx_address_coordinates ON address(latitude, longitude);
+CREATE INDEX idx_address_quality ON address(geocoding_quality);
 ```
 
-#### PollingStation Table
+#### polling_station Table
 ```sql
-Latitude REAL,
-Longitude REAL,
-GeocodingQuality TEXT,
-GeocodingSource TEXT,
-GeocodedAt TIMESTAMP,
-MatchedAddress TEXT,            -- The matched address for fuzzy search results
+latitude REAL,
+longitude REAL,
+geocoding_quality TEXT,
+geocoding_source TEXT,
+matched_address TEXT,           -- The matched address for fuzzy search results
 
-CREATE INDEX idx_PollingStation_Coordinates ON PollingStation(Latitude, Longitude);
-CREATE INDEX idx_PollingStation_Quality ON PollingStation(GeocodingQuality);
+CREATE INDEX idx_polling_station_coordinates ON polling_station(latitude, longitude);
+CREATE INDEX idx_polling_station_quality ON polling_station(geocoding_quality);
 ```
 
 ### PostGIS Spatial Queries
@@ -1683,23 +1987,23 @@ CREATE INDEX idx_PollingStation_Quality ON PollingStation(GeocodingQuality);
 When `GEOCODING_USE_POSTGIS=true`, PostgreSQL exports include GEOGRAPHY columns for advanced spatial analysis:
 
 ```sql
--- PostgreSQL schema additions
-ALTER TABLE CanonicalAddress ADD COLUMN Geometry GEOGRAPHY(POINT, 4326);
-ALTER TABLE PollingStation ADD COLUMN Geometry GEOGRAPHY(POINT, 4326);
+-- PostgreSQL schema additions (geometry column populated during import)
+ALTER TABLE address ADD COLUMN geometry GEOGRAPHY(POINT, 4326);
+ALTER TABLE polling_station ADD COLUMN geometry GEOGRAPHY(POINT, 4326);
 
 -- Spatial indexes for efficient queries
-CREATE INDEX idx_CanonicalAddress_Geometry ON CanonicalAddress USING GIST(Geometry);
-CREATE INDEX idx_PollingStation_Geometry ON PollingStation USING GIST(Geometry);
+CREATE INDEX idx_address_geometry ON address USING GIST(geometry);
+CREATE INDEX idx_polling_station_geometry ON polling_station USING GIST(geometry);
 ```
 
 #### Example Spatial Queries
 
 **Find addresses within 1km radius:**
 ```sql
-SELECT FullAddress, Latitude, Longitude
-FROM CanonicalAddress
+SELECT full_address, latitude, longitude
+FROM address
 WHERE ST_DWithin(
-    Geometry,
+    geometry,
     ST_GeogFromText('POINT(19.0402 47.4979)'),  -- Budapest coordinates
     1000  -- 1000 meters = 1km
 );
@@ -1708,11 +2012,11 @@ WHERE ST_DWithin(
 **Find nearest polling station to an address:**
 ```sql
 SELECT 
-    ps.PollingStationAddress,
-    ST_Distance(ca.Geometry, ps.Geometry) as distance_meters
-FROM CanonicalAddress ca
-CROSS JOIN PollingStation ps
-WHERE ca.FullAddress = 'Your Address Here'
+    ps.address,
+    ST_Distance(a.geometry, ps.geometry) as distance_meters
+FROM address a
+CROSS JOIN polling_station ps
+WHERE a.full_address = 'Your Address Here'
 ORDER BY distance_meters
 LIMIT 1;
 ```
@@ -1720,18 +2024,18 @@ LIMIT 1;
 **Calculate distance between two addresses:**
 ```sql
 SELECT ST_Distance(
-    (SELECT Geometry FROM CanonicalAddress WHERE FullAddress = 'Address 1'),
-    (SELECT Geometry FROM CanonicalAddress WHERE FullAddress = 'Address 2')
+    (SELECT geometry FROM address WHERE full_address = 'Address 1'),
+    (SELECT geometry FROM address WHERE full_address = 'Address 2')
 ) as distance_meters;
 ```
 
 **Find all addresses within a settlement boundary:**
 ```sql
-SELECT ca.FullAddress, ca.Latitude, ca.Longitude
-FROM CanonicalAddress ca
+SELECT a.full_address, a.latitude, a.longitude
+FROM address a
 WHERE ST_Within(
-    ca.Geometry,
-    (SELECT Polygon FROM NationalIndividualElectoralDistrict WHERE OEVK = '01')
+    a.geometry,
+    (SELECT polygon FROM oevk WHERE code = '01')
 );
 ```
 
@@ -1739,18 +2043,17 @@ WHERE ST_Within(
 
 Geocoded data is included in CSV exports:
 
-**CanonicalAddress.csv columns:**
+**address.csv columns:**
 ```csv
-CanonicalAddressID,CountyCode,SettlementName,FullAddress,StreetName,HouseNumber,
-AccessibilityFlag,Latitude,Longitude,GeocodingQuality,GeocodingSource,GeocodedAt,
-CreatedAt,PollingStationIDs,PIRCodes,OriginalAddressCount
+id,county_id,settlement_id,public_space_name_id,public_space_type_id,
+oevk_id,tevk_id,postal_code_id,polling_station_id,house_number,building,
+staircase,full_address,latitude,longitude,geocoding_quality,geocoding_source
 ```
 
-**PollingStation.csv columns:**
+**polling_station.csv columns:**
 ```csv
-ID,PollingStationAddress,SettlementIndividualElectoralDistrict_ID,County_ID,
-Settlement_ID,NationalIndividualElectoralDistrict_ID,Latitude,Longitude,
-GeocodingQuality,GeocodingSource,GeocodedAt,MatchedAddress
+id,address,tevk_id,county_id,settlement_id,oevk_id,latitude,longitude,
+geocoding_quality,geocoding_source,matched_address
 ```
 
 ### Troubleshooting
@@ -1798,7 +2101,7 @@ docker stats oevk-nominatim
 # Check geocoding statistics
 python src/cli.py geocode status
 
-# Review failed addresses in database
+# Review failed addresses in DuckDB database (internal table uses PascalCase)
 sqlite3 data/oevk.db "SELECT FullAddress FROM CanonicalAddress WHERE GeocodingQuality = 'failed' LIMIT 10;"
 
 # Check Nominatim service
@@ -1996,7 +2299,7 @@ erDiagram
         string FullAddress
         string PublicSpaceName
         string PublicSpaceType
-        string HouseNumber
+        string HouseNumber "Can be NULL/empty"
         string Building
         string Staircase
         string PostalCode_ID FK
@@ -2025,7 +2328,7 @@ erDiagram
         string CountyCode "County code (text, not FK)"
         string SettlementName "Settlement name (text, not FK)"
         string StreetName
-        string HouseNumber
+        string HouseNumber "Can be empty for infrastructure addresses"
         string Building
         string Staircase
         string FullAddress "Formatted Hungarian address"
@@ -2056,140 +2359,163 @@ erDiagram
 - **CanonicalAddress** stores `CountyCode` and `SettlementName` as text (not foreign keys)
 - To join CanonicalAddress with Settlement: `County.CountyCode = CanonicalAddress.CountyCode AND Settlement.SettlementName = CanonicalAddress.SettlementName`
 
-### PostgreSQL/Export Model Diagram
+### PostgreSQL/Export Model Diagram (snake_case naming as of v014)
 
 ```mermaid
 erDiagram
-    County ||--o{ Settlement : contains
-    County ||--o{ NationalIndividualElectoralDistrict : contains
-    County ||--o{ Address : contains
-    County ||--o{ PollingStation : contains
-    Settlement ||--o{ SettlementIndividualElectoralDistrict : contains
-    Settlement ||--o{ Address : contains
-    Settlement ||--o{ PollingStation : contains
-    SettlementIndividualElectoralDistrict ||--o{ Address : "assigned to"
-    NationalIndividualElectoralDistrict ||--o{ Address : "assigned to"
-    PollingStation ||--o{ Address : contains
-    PostalCode ||--o{ PostalCode_Settlement : has
-    Settlement ||--o{ PostalCode_Settlement : has
-    PostalCode ||--o{ Address : assigned
-    Settlement ||--o{ SettlementPublicSpaces : has
-    PublicSpaceName ||--o{ SettlementPublicSpaces : has
-    PublicSpaceType ||--o{ SettlementPublicSpaces : has
-    Address ||--o{ AddressPollingStations : "has (optional export)"
-    Address ||--o{ AddressPIRCodes : "has (optional export)"
+    county ||--o{ settlement : contains
+    county ||--o{ oevk : contains
+    county ||--o{ address : contains
+    county ||--o{ polling_station : contains
+    settlement ||--o{ tevk : contains
+    settlement ||--o{ address : contains
+    settlement ||--o{ polling_station : contains
+    tevk ||--o{ address : "assigned to"
+    oevk ||--o{ address : "assigned to"
+    polling_station ||--o{ address : contains
+    postal_code ||--o{ postal_code_settlement : has
+    settlement ||--o{ postal_code_settlement : has
+    postal_code ||--o{ address : assigned
+    settlement ||--o{ settlement_public_spaces : has
+    public_space_name ||--o{ settlement_public_spaces : has
+    public_space_type ||--o{ settlement_public_spaces : has
+    public_space_name ||--o{ address : "street name"
+    public_space_type ||--o{ address : "street type"
+    address ||--o{ address_polling_stations : "has (optional)"
+    address ||--o{ address_pir_codes : "has (optional)"
     
-    County {
-        uuid ID PK "uuid5(md5(CountyCode))"
-        string CountyCode UK
-        string CountyName
+    county {
+        uuid id PK "uuid5(md5(code))"
+        string code UK "NO prefix - not county_code"
+        string name "NO prefix - not county_name"
     }
-    Settlement {
-        uuid ID PK "uuid5(md5(CountyCode|SettlementCode))"
-        string SettlementCode
-        string SettlementName
-        uuid County_ID FK
+    settlement {
+        uuid id PK "uuid5(md5(county_code|code))"
+        string code "NO prefix - not settlement_code"
+        string name "NO prefix - not settlement_name"
+        uuid county_id FK
     }
-    NationalIndividualElectoralDistrict {
-        uuid ID PK "uuid5(md5(CountyCode|OEVK))"
-        string OEVK
-        string Name
-        string Center "PostGIS POINT or text"
-        string Polygon "PostGIS POLYGON or text"
-        geography Geometry "PostGIS GEOGRAPHY (PostgreSQL only)"
-        uuid County_ID FK
+    oevk {
+        uuid id PK "uuid5(md5(county_code|code))"
+        string code "National district code"
+        string name
+        geometry center "PostGIS GEOMETRY(POINT, 4326)"
+        geometry polygon "PostGIS GEOMETRY(POLYGON, 4326)"
+        geography geometry "PostGIS GEOGRAPHY for spatial queries"
+        uuid county_id FK
     }
-    SettlementIndividualElectoralDistrict {
-        uuid ID PK "uuid5(md5(CountyCode|SettlementCode|TEVK))"
-        string TEVK
-        string Name
-        uuid County_ID FK
-        uuid Settlement_ID FK
+    tevk {
+        uuid id PK "uuid5(md5(county_code|settlement_code|code))"
+        string code "Settlement district code"
+        string name
+        uuid county_id FK
+        uuid settlement_id FK
     }
-    PostalCode {
-        uuid ID PK "uuid5(md5(PostalCode))"
-        string PostalCode UK
+    postal_code {
+        uuid id PK "uuid5(md5(code))"
+        string code UK "NO prefix - not postal_code"
     }
-    PostalCode_Settlement {
-        uuid ID PK "uuid5(md5(PostalCode_ID|Settlement_ID))"
-        uuid PostalCode_ID FK
-        uuid Settlement_ID FK
+    postal_code_settlement {
+        uuid id PK "uuid5(md5(postal_code_id|settlement_id))"
+        uuid postal_code_id FK
+        uuid settlement_id FK
     }
-    PollingStation {
-        uuid ID PK "uuid5(md5(...))"
-        string PollingStationAddress
-        real Latitude
-        real Longitude
-        geography Geometry "PostGIS GEOGRAPHY (PostgreSQL only)"
-        string GeocodingQuality
-        uuid SettlementIndividualElectoralDistrict_ID FK
-        uuid County_ID FK
-        uuid Settlement_ID FK
-        uuid NationalIndividualElectoralDistrict_ID FK
+    polling_station {
+        uuid id PK "uuid5(md5(...))"
+        string address "NO prefix - not polling_station_address"
+        real latitude
+        real longitude
+        geography geometry "PostGIS GEOGRAPHY"
+        string geocoding_quality
+        uuid tevk_id FK
+        uuid county_id FK
+        uuid settlement_id FK
+        uuid oevk_id FK
     }
-    Address {
-        uuid ID PK "uuid5(md5(...))"
-        integer Sequence
-        integer OriginalOrder
-        string FullAddress
-        string PublicSpaceName
-        string PublicSpaceType
-        string HouseNumber
-        string Building
-        string Staircase
-        string CountyCode "Text (for join to County)"
-        string SettlementName "Text (for join to Settlement)"
-        real Latitude
-        real Longitude
-        geography Geometry "PostGIS GEOGRAPHY (PostgreSQL only)"
-        string GeocodingQuality
-        string AccessibilityFlag
-        integer OriginalAddressCount "Number of duplicates merged"
-        uuid PostalCode_ID FK
-        uuid PollingStation_ID FK
-        uuid SettlementIndividualElectoralDistrict_ID FK
-        uuid County_ID FK
-        uuid Settlement_ID FK
-        uuid NationalIndividualElectoralDistrict_ID FK
+    address {
+        uuid id PK "uuid5(md5(...))"
+        string house_number "NULLABLE - empty for infrastructure/area addresses"
+        string building
+        string staircase
+        string full_address
+        real latitude
+        real longitude
+        geography geometry "PostGIS GEOGRAPHY"
+        string geocoding_quality
+        string geocoding_source
+        uuid county_id FK "NOT NULL"
+        uuid settlement_id FK "NOT NULL"
+        uuid public_space_name_id FK "NOT NULL"
+        uuid public_space_type_id FK "NOT NULL"
+        uuid oevk_id FK "NOT NULL"
+        uuid tevk_id FK "NOT NULL"
+        uuid postal_code_id FK "NOT NULL"
+        uuid polling_station_id FK "NOT NULL"
     }
-    PublicSpaceName {
-        uuid ID PK "uuid5(md5(PublicSpaceName))"
-        string PublicSpaceName UK
+    public_space_name {
+        uuid id PK "uuid5(md5(name))"
+        string name UK "NO prefix - not public_space_name"
     }
-    PublicSpaceType {
-        uuid ID PK "uuid5(md5(PublicSpaceType))"
-        string PublicSpaceType UK
+    public_space_type {
+        uuid id PK "uuid5(md5(name))"
+        string name UK "NO prefix - not public_space_type"
     }
-    SettlementPublicSpaces {
-        uuid ID PK "uuid5(md5(...))"
-        uuid Settlement_ID FK
-        uuid PublicSpaceName_ID FK
-        uuid PublicSpaceType_ID FK
+    settlement_public_spaces {
+        uuid id PK "uuid5(md5(...))"
+        uuid settlement_id FK
+        uuid public_space_name_id FK
+        uuid public_space_type_id FK
     }
-    AddressPollingStations {
-        uuid ID PK "uuid5(md5(AddressID|PollingStationID))"
-        uuid AddressID FK
-        uuid PollingStationID FK
+    address_polling_stations {
+        uuid id PK "uuid5(md5(address_id|polling_station_id))"
+        uuid address_id FK
+        uuid polling_station_id FK
     }
-    AddressPIRCodes {
-        uuid ID PK "uuid5(md5(AddressID|PIRCode))"
-        uuid AddressID FK
-        string PIRCode
+    address_pir_codes {
+        uuid id PK "uuid5(md5(address_id|pir_code))"
+        uuid address_id FK
+        string pir_code
     }
 ```
 
-**Key Differences from DuckDB Model:**
-- **Address** table contains only **canonical deduplicated addresses** (renamed from CanonicalAddress)
-- All IDs use **UUID v5 format** instead of MD5 hex strings
-- **PostGIS GEOGRAPHY columns** for spatial queries (Latitude/Longitude also preserved as REAL)
-- Address table includes `CountyCode` and `SettlementName` as text fields AND proper foreign keys (`County_ID`, `Settlement_ID`)
-- `OriginalAddressCount` shows how many duplicate addresses were merged
-- **No AddressMapping table** (internal tracking, not exported)
-- **No original Address table** (duplicates not exported by default)
-- AddressPollingStations and AddressPIRCodes are **optional exports** (for advanced use cases)
+**Key Differences from DuckDB Model (as of v014):**
 
-**Note on TEVK and OEVK Relationship:**  
-TEVK (SettlementIndividualElectoralDistrict) and OEVK (NationalIndividualElectoralDistrict) are **parallel, independent electoral systems**, not hierarchical. TEVK is for settlement-level municipal elections organized by settlement boundaries, while OEVK is for national parliamentary elections organized by county boundaries. Addresses maintain references to both systems independently via the Address table.
+1. **Naming Convention**: All identifiers use `snake_case` instead of `PascalCase`
+   - Tables: `address`, `polling_station`, `oevk`, `tevk` (not `Address`, `PollingStation`)
+   - Columns: **NO table name prefixes** - `county.code`, `settlement.name`, `oevk.code` (not `county_code`, `settlement_name`, `oevk_code`)
+   - Foreign keys: DO have table prefix - `county_id`, `settlement_id`, `oevk_id`
+   - Special abbreviations: `oevk`, `tevk` for Hungarian electoral districts
+
+2. **Address Table Structure** (canonical deduplicated addresses only):
+   - ✅ **8 Foreign Keys**: All properly enforced with NOT NULL constraints
+   - ✅ `public_space_name_id`, `public_space_type_id` - Street name/type via FKs
+   - ✅ `oevk_id`, `tevk_id` - Electoral district assignments
+   - ✅ `postal_code_id`, `polling_station_id` - Postal code and polling station
+   - ✅ `county_id`, `settlement_id` - Geographic hierarchy
+   - ⚠️ **Nullable `house_number`**: Can be NULL/empty for infrastructure addresses (railway stations, landmarks) or complex buildings identified by building/staircase only (~7,551 addresses, 0.23% of dataset)
+   - ❌ **Removed**: `StreetName`, `CountyCode`, `SettlementName`, `AccessibilityFlag`, `PIRCode`, `created_at`, `geocoded_at`
+   - ✅ Full 3NF normalization - all data via FK relationships
+
+3. **UUID v5 Format**: All IDs converted from MD5 hex strings to standard UUID v5 format
+
+4. **PostGIS GEOGRAPHY columns**: Spatial queries supported (lat/lon also preserved as REAL)
+
+5. **Tables Not Exported**:
+   - `AddressMapping` - internal deduplication tracking
+   - Original `Address` table - duplicates not exported by default
+   - `DeduplicationReport` - analytics only
+
+6. **Optional Junction Tables**:
+   - `address_polling_stations`, `address_pir_codes` - for advanced use cases only
+
+**Note on oevk and tevk Relationship:**  
+`tevk` (Settlement Electoral District) and `oevk` (National Electoral District) are **parallel, independent electoral systems**, not hierarchical. TEVK is for settlement-level municipal elections organized by settlement boundaries, while OEVK is for national parliamentary elections organized by county boundaries. Addresses maintain references to both systems independently via the address table.
+
+**Data Quality Guarantees:**
+- All address foreign keys are NOT NULL (enforced at schema and export level)
+- Export query filters addresses that lack required foreign keys
+- CSV import will fail if data violates NOT NULL constraints
+- Full referential integrity maintained across all relationships
 
 ### Transformation Flow
 
@@ -2345,8 +2671,8 @@ This section shows how source CSV columns map to database tables and columns.
 | `maz` | County | CountyCode | Direct mapping |
 | `maz` | NationalIndividualElectoralDistrict | County_ID | md5(maz) |
 | `evk` | NationalIndividualElectoralDistrict | OEVK | Direct mapping |
-| `centrum` | NationalIndividualElectoralDistrict | Center | Direct mapping (stored as text "lat lon") |
-| `poligon` | NationalIndividualElectoralDistrict | Polygon | Direct mapping (stored as text coordinates) |
+| `centrum` | NationalIndividualElectoralDistrict | Center | Direct mapping (converted to PostGIS GEOMETRY(POINT, 4326)) |
+| `poligon` | NationalIndividualElectoralDistrict | Polygon | Direct mapping (converted to PostGIS GEOMETRY(POLYGON, 4326)) |
 | `maz` + `evk` | NationalIndividualElectoralDistrict | ID | md5(maz\|evk) |
 
 #### From Korzet_allomany_orszagos.csv
@@ -2386,8 +2712,8 @@ This section shows how source CSV columns map to database tables and columns.
 | Közterület jelleg | PublicSpaceType | PublicSpaceType | PublicSpaceType | Extracted and normalized (e.g., "utca", "tér", "út") |
 | Közterület jelleg | PublicSpaceType | PublicSpaceType | ID | md5(PublicSpaceType) |
 | Közterület jelleg | PublicSpaceType | Address | PublicSpaceType | Direct mapping |
-| Házszám | HouseNumber | Address | HouseNumber | Direct mapping with leading zeros |
-| Házszám | HouseNumber | CanonicalAddress | HouseNumber | Cleaned: leading zeros removed, ranges preserved |
+| Házszám | HouseNumber | Address | HouseNumber | Direct mapping with leading zeros; can be NULL/empty for infrastructure addresses |
+| Házszám | HouseNumber | CanonicalAddress | HouseNumber | Cleaned: leading zeros removed, ranges preserved; empty string for addresses without house numbers |
 | Épület | Building | Address | Building | Direct mapping |
 | Épület | Building | CanonicalAddress | - | Used in FullAddress formatting |
 | Lépcsőház | Staircase | Address | Staircase | Direct mapping |
@@ -2419,10 +2745,18 @@ The deduplication process identifies duplicate addresses based on formatted Hung
 2. **Formatting Rules**:
    - Remove leading zeros from house numbers: `"000001"` → `"1"`
    - Handle ranges: `"000001-00005"` → `"1-5"`
+   - **Allow empty house numbers**: `"000000"` → `""` (valid for infrastructure/complex buildings)
    - Convert numeric staircases to Roman numerals: `"0001"` → `"I"`
    - Apply Hungarian address format: `"{Street Name} {Street Type} {House Number}. {Building}. épület {Staircase}. lépcsőház"`
 3. **Canonical ID**: md5(CountyCode | SettlementName | FullAddress)
 4. **Relationship Preservation**: All polling stations and PIR codes are preserved through junction tables
+
+**Addresses Without House Numbers** (new in v1.5):
+The pipeline now supports addresses without house numbers for:
+- **Complex buildings**: `"Gázgyári lakótelep, 1. épület I. lépcsőház"` (building + staircase identify the address)
+- **Infrastructure addresses**: `"Vasútállomás"` (railway stations, landmarks, farms)
+- Approximately 7,551 addresses (0.23% of dataset) fall into this category
+- Schema: `house_number` field is nullable in PostgreSQL exports
 
 **Example**:
 - Input: `"Körtöltés", "utca", "000001", "D", ""`

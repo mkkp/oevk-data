@@ -133,7 +133,7 @@ class AddressDeduplicator:
             if self.logger:
                 self.logger.log_completion(
                     "address_deduplication",
-                    processing_time_ms,
+                    processing_time_ms / 1000,  # Convert milliseconds to seconds
                     canonical_count=canonical_count,
                     original_count=original_count,
                 )
@@ -374,29 +374,62 @@ class AddressDeduplicator:
         """
         Clean house number by removing leading zeros.
 
-        Examples:
+        IMPORTANT: Returns empty string ("") if the house number consists entirely of zeros
+        (e.g., "0000", "00000", "0" -> "") to allow addresses without house numbers but
+        with building/staircase identifiers or infrastructure addresses.
+        Leading zeros before actual digits are stripped normally.
+
+        Examples - Valid cases (leading zeros stripped):
         - "000001" -> "1"
         - "000001/D" -> "1/D"
         - "000001-00005" -> "1-5"
-        - "" -> "0" (default for empty)
+
+        Examples - Empty house number (all zeros - returns empty string):
+        - "0000" -> "" (no house number - address may still be valid with building/staircase)
+        - "00000" -> "" (no house number)
+        - "0" -> "" (no house number)
+        - "0000/D" -> "" (base number is all zeros, suffix discarded)
+        - "0000-0005" -> "" (first part is all zeros, range invalid)
+        - "" -> "" (empty input)
+        - None -> "" (null input)
+
+        Returns:
+            Cleaned house number string, or empty string if no house number
         """
         if not house_num:
-            return "0"
+            return ""
+
+        house_num = house_num.strip()
+        if not house_num:
+            return ""
 
         # Handle ranges (e.g., "000001-00005" -> "1-5")
         if "-" in house_num:
             parts = house_num.split("-")
-            cleaned_parts = [part.lstrip("0") or "0" for part in parts]
+            cleaned_parts = []
+            for part in parts:
+                cleaned = part.lstrip("0")
+                # If any part becomes empty after stripping zeros, return empty string
+                if not cleaned:
+                    return ""
+                cleaned_parts.append(cleaned)
             return "-".join(cleaned_parts)
 
         # Handle slash notation (e.g., "000001/D" -> "1/D")
         if "/" in house_num:
             parts = house_num.split("/", 1)
-            cleaned_base = parts[0].lstrip("0") or "0"
+            cleaned_base = parts[0].lstrip("0")
+            # If base becomes empty after stripping zeros, return empty string
+            if not cleaned_base:
+                return ""
             return f"{cleaned_base}/{parts[1]}"
 
         # Simple number (e.g., "000001" -> "1")
-        return house_num.lstrip("0") or "0"
+        cleaned = house_num.lstrip("0")
+        # If it becomes empty after stripping zeros, return empty string (no house number)
+        if not cleaned:
+            return ""
+        return cleaned
 
     def _to_roman_numeral(self, num_str: str) -> str:
         """
@@ -449,6 +482,12 @@ class AddressDeduplicator:
         """
         Format full address according to Hungarian address format rules.
 
+        IMPORTANT: Now allows addresses without house numbers if building/staircase exists,
+        or for infrastructure/area addresses.
+        - "0000" with building/staircase -> valid address
+        - "0000" without any identifier -> infrastructure/area address (valid)
+        Leading zeros before actual digits are stripped normally (e.g., "000001" -> "1").
+
         Rules:
         1. House number with "/" AND both building+staircase: Ignore "/", use "number. B. épület L. lépcsőház"
         2. House number with "/" AND only staircase: Keep "/", add "number/X. L. lépcsőház"
@@ -466,6 +505,11 @@ class AddressDeduplicator:
         - ("Körtöltés utca", "000001/D", "B", "L") -> "Körtöltés utca 1. B. épület L. lépcsőház"
         - ("Körtöltés utca", "000001/D", "", "L") -> "Körtöltés utca 1/D. L. lépcsőház"
         - ("Körtöltés utca", "000001-00005", "B", "L") -> "Körtöltés utca 1-5. B. épület L. lépcsőház"
+        - ("Gázgyári lakótelep", "0000", "0001", "0001") -> "Gázgyári lakótelep, 1. épület I. lépcsőház"
+        - ("Vasútállomás", "0000", "", "") -> "Vasútállomás" (infrastructure address)
+
+        Returns:
+            Formatted address string (never None - all addresses can be formatted)
         """
         # Clean house number
         cleaned_house = self._clean_house_number(house_num)
@@ -487,13 +531,31 @@ class AddressDeduplicator:
         else:
             staircase = staircase_raw.upper() if staircase_raw else ""
 
-        has_slash = "/" in house_num
-        has_range = "-" in house_num
+        has_slash = "/" in house_num if house_num else False
+        has_range = "-" in house_num if house_num else False
         has_building = bool(building)
         has_staircase = bool(staircase)
+        has_house_number = bool(cleaned_house)
 
         # Build street prefix with type
         street_prefix = f"{street_name} {street_type}".strip()
+
+        # Handle addresses without house numbers
+        if not has_house_number:
+            # Case 1: Has building AND staircase -> "Street Name, B. épület L. lépcsőház"
+            if has_building and has_staircase:
+                return f"{street_prefix}, {building}. épület {staircase}. lépcsőház"
+
+            # Case 2: Has only building -> "Street Name, B. épület"
+            if has_building:
+                return f"{street_prefix}, {building}. épület"
+
+            # Case 3: Has only staircase -> "Street Name, L. lépcsőház"
+            if has_staircase:
+                return f"{street_prefix}, {staircase}. lépcsőház"
+
+            # Case 4: No house number, no building, no staircase -> "Street Name" (infrastructure/area address)
+            return street_prefix
 
         # Rule 1: Has "/" AND both building+staircase -> Ignore "/", use épület format
         if has_slash and has_building and has_staircase:
@@ -568,8 +630,50 @@ class AddressDeduplicator:
                 staircase or "",
             )
 
-        # Apply formatting to create full_address column
+        # Clean house_number, building, and staircase columns (strip leading zeros)
+        def clean_house_number_udf(house_num: str) -> str:
+            return self._clean_house_number(house_num or "")
+
+        def clean_building_udf(building: str) -> str:
+            """Clean building by stripping leading zeros from numeric buildings."""
+            building_raw = (building or "").strip()
+            if not building_raw:
+                return ""
+            # Only strip leading zeros if it's purely numeric
+            if building_raw.isdigit():
+                cleaned = building_raw.lstrip("0")
+                return cleaned if cleaned else ""
+            # Keep non-numeric building identifiers as-is (uppercase)
+            return building_raw.upper()
+
+        def clean_staircase_udf(staircase: str) -> str:
+            """Clean staircase by stripping leading zeros from numeric staircases."""
+            staircase_raw = (staircase or "").strip()
+            if not staircase_raw:
+                return ""
+            # Only strip leading zeros if it's purely numeric
+            if staircase_raw.isdigit():
+                cleaned = staircase_raw.lstrip("0")
+                return cleaned if cleaned else ""
+            # Keep non-numeric staircase identifiers as-is (uppercase)
+            return staircase_raw.upper()
+
         formatted_df = addresses_df.with_columns(
+            [
+                pl.col("house_number")
+                .map_elements(clean_house_number_udf, return_dtype=pl.Utf8)
+                .alias("house_number"),
+                pl.col("building")
+                .map_elements(clean_building_udf, return_dtype=pl.Utf8)
+                .alias("building"),
+                pl.col("staircase")
+                .map_elements(clean_staircase_udf, return_dtype=pl.Utf8)
+                .alias("staircase"),
+            ]
+        )
+
+        # Apply formatting to create full_address column
+        formatted_df = formatted_df.with_columns(
             pl.struct(
                 ["street_name", "street_type", "house_number", "building", "staircase"]
             )
@@ -585,6 +689,34 @@ class AddressDeduplicator:
             )
             .alias("full_address")
         )
+
+        # Note: We now allow addresses without house numbers (empty house_number field)
+        # These are valid for:
+        # 1. Complex buildings with building/staircase identifiers
+        # 2. Infrastructure/area addresses (railway stations, landmarks, etc.)
+        # All addresses should have full_address generated, so no filtering needed
+
+        # Log statistics about addresses without house numbers for monitoring
+        no_house_count = formatted_df.filter(
+            (pl.col("house_number").is_null())
+            | (pl.col("house_number") == "")
+            | (pl.col("house_number") == "0")
+        ).height
+
+        if no_house_count > 0:
+            with_building = formatted_df.filter(
+                ((pl.col("house_number").is_null()) | (pl.col("house_number") == ""))
+                & (
+                    (pl.col("building").is_not_null() & (pl.col("building") != ""))
+                    | (pl.col("staircase").is_not_null() & (pl.col("staircase") != ""))
+                )
+            ).height
+
+            logger.info(
+                f"Addresses without house numbers: {no_house_count:,} "
+                f"({with_building:,} with building/staircase, "
+                f"{no_house_count - with_building:,} infrastructure/area addresses)"
+            )
 
         # Generate canonical ID hash from: county_code | settlement_name | full_address
         # This ensures addresses that format to the same string get the same canonical ID
@@ -692,7 +824,9 @@ class AddressDeduplicator:
         has_accessibility = "accessibility_flag" in addresses_df.columns
 
         # Calculate structure score for each address to enable priority-based selection
-        def calculate_score_udf(house_number: str, building: str, staircase: str) -> int:
+        def calculate_score_udf(
+            house_number: str, building: str, staircase: str
+        ) -> int:
             return self._calculate_address_structure_score(
                 house_number or "", building or "", staircase or ""
             )
@@ -709,7 +843,10 @@ class AddressDeduplicator:
                 )
                 .alias("structure_score"),
                 # Add row number within each canonical group for deterministic tiebreaking
-                pl.col("canonical_address_id").cum_count().over("canonical_address_id").alias("row_order")
+                pl.col("canonical_address_id")
+                .cum_count()
+                .over("canonical_address_id")
+                .alias("row_order"),
             ]
         )
 
@@ -738,7 +875,7 @@ class AddressDeduplicator:
         return (
             addresses_with_score.sort(
                 ["canonical_address_id", "structure_score", "row_order"],
-                descending=[False, True, False]
+                descending=[False, True, False],
             )
             .group_by("canonical_address_id")
             .agg(aggregation_columns)

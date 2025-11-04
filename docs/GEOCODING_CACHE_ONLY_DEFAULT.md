@@ -1,3 +1,33 @@
+<!--
+DOCUMENT METADATA
+=================
+Title: Geocoding Cache-Only Default
+Type: Specification
+Category: Feature
+Status: Implemented
+Version: 1.0
+Created: 2024-10-20
+Last Updated: 2024-10-20
+Author: System
+
+Related Documents:
+- README.md (Geocoding section)
+
+Related Code:
+- src/geocoding/ (geocoding modules)
+
+Dependencies:
+- Nominatim cache
+
+Keywords: geocoding, cache, performance, optimization, default-behavior
+
+Summary:
+Specification for changing geocoding default behavior to cache-only mode to prevent unintended large-scale geocoding operations. Improves performance and prevents accidental API overload.
+
+Audience:
+Developers, operators running geocoding operations.
+-->
+
 # Geocoding: Cache-Only by Default
 
 **Date**: 2025-10-25  
