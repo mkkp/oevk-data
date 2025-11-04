@@ -77,6 +77,10 @@ class ReleaseUtils:
             return f"oevk-data-db-{release_tag}.zip"
         elif artifact_type == "postgresql":
             return f"oevk-postgresql-{release_tag}.zip"
+        elif artifact_type == "postgresql_dump":
+            return f"oevk-postgresql-dump-{release_tag}.sql.gz"
+        elif artifact_type == "geocoding_cache":
+            return f"oevk-geocoding-cache-{release_tag}.zip"
         else:
             raise ValueError(f"Unknown artifact type: {artifact_type}")
 

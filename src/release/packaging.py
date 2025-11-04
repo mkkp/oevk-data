@@ -290,11 +290,21 @@ class FilePackager:
         if not csv_files:
             raise FileNotFoundError(f"No CSV files found in {postgresql_dir}")
 
+        # Exclude large Address.csv file since chunked versions exist
+        # This keeps the archive under GitHub's 2GB limit
+        csv_files_filtered = [f for f in csv_files if f.name != "Address.csv"]
+
+        excluded_count = len(csv_files) - len(csv_files_filtered)
+        if excluded_count > 0:
+            self.logger.logger.info(
+                f"  Excluding {excluded_count} large file(s) (Address.csv) - using chunked versions instead"
+            )
+
         # Create ZIP archive with STORED method (no compression) for large CSV files
         # CSV files are already text and don't compress well, this makes packaging much faster
         self.logger.logger.info(f"Creating PostgreSQL archive: {archive_name}")
         self.logger.logger.info(
-            f"  Including {len(csv_files)} CSV files (stored without compression)"
+            f"  Including {len(csv_files_filtered)} CSV files (stored without compression)"
         )
 
         with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_STORED) as zipf:
@@ -302,8 +312,8 @@ class FilePackager:
             zipf.write(schema_path, "schema.sql")
             zipf.write(import_script_path, "import_postgresql.sql")
 
-            # Add all CSV files in postgresql/ subdirectory
-            for csv_file in csv_files:
+            # Add filtered CSV files in postgresql/ subdirectory
+            for csv_file in csv_files_filtered:
                 zipf.write(csv_file, f"postgresql/{csv_file.name}")
 
             # Add README with instructions
@@ -384,9 +394,12 @@ All CSV files use standard PostgreSQL COPY format:
 - `PollingStation.csv` - 8,547 polling stations
 
 **Address Tables (3.3M addresses):**
-- `Address.csv` - 3.3M deduplicated canonical addresses
+- `Address_chunk*.csv` - 3.3M deduplicated canonical addresses (split into chunks for GitHub size limits)
 - `AddressPollingStations.csv` - 3.3M address-polling station mappings
 - `AddressPIRCodes.csv` - 3.3M address-postal code mappings
+
+**Note:** The full `Address.csv` file is excluded from this archive to keep the size under GitHub's 2GB limit.
+Use the `Address_chunk*.csv` files instead, which contain the same data split into manageable chunks.
 
 **Utility Tables:**
 - `AddressMapping.csv` - Maps original addresses to canonical addresses
@@ -604,6 +617,79 @@ CREATE TABLE geocoding_cache (
             "file_size": file_size,
             "checksum": checksum,
             "created_at": datetime.now(),
+        }
+
+    def package_postgresql_dump(
+        self, data_dir: str, release_tag: str, force: bool = False
+    ) -> Dict[str, Any]:
+        """Package PostgreSQL dump file (.sql.gz) as a release artifact.
+
+        Args:
+            data_dir: Directory containing the PostgreSQL dump file
+            release_tag: Release tag for naming
+            force: If True, recreate even if archive exists
+
+        Returns:
+            Dictionary containing artifact metadata
+        """
+        data_path = Path(data_dir)
+
+        # Find the most recent PostgreSQL dump file
+        dump_files = list(data_path.glob("oevk_db_*.sql.gz"))
+
+        if not dump_files:
+            raise FileNotFoundError(
+                f"No PostgreSQL dump file (oevk_db_*.sql.gz) found in {data_dir}"
+            )
+
+        # Use the most recent dump file
+        dump_file = max(dump_files, key=lambda p: p.stat().st_mtime)
+
+        self.logger.logger.info(f"Found PostgreSQL dump: {dump_file.name}")
+
+        # The dump file is already compressed, so we'll just copy it to output
+        # and include it as-is in the release (no additional packaging needed)
+        output_name = f"oevk-postgresql-dump-{release_tag}.sql.gz"
+        output_path = self.output_dir / output_name
+
+        # Check if output already exists
+        if output_path.exists() and not force:
+            file_size = output_path.stat().st_size
+            checksum = self._calculate_checksum(output_path)
+            self.logger.logger.info(
+                f"PostgreSQL dump artifact already exists, skipping: {output_name} ({file_size} bytes)"
+            )
+            return {
+                "artifact_type": "postgresql_dump",
+                "file_path": str(output_path),
+                "file_size": file_size,
+                "checksum": checksum,
+                "created_at": datetime.now(),
+                "skipped": True,
+            }
+
+        # Copy dump file to output directory
+        self.logger.logger.info(f"Creating PostgreSQL dump artifact: {output_name}")
+
+        import shutil
+
+        shutil.copy2(dump_file, output_path)
+
+        # Calculate file size and checksum
+        file_size = output_path.stat().st_size
+        checksum = self._calculate_checksum(output_path)
+
+        self.logger.logger.info(
+            f"PostgreSQL dump artifact created: {output_name} ({file_size:,} bytes)"
+        )
+
+        return {
+            "artifact_type": "postgresql_dump",
+            "file_path": str(output_path),
+            "file_size": file_size,
+            "checksum": checksum,
+            "created_at": datetime.now(),
+            "source_file": dump_file.name,
         }
 
     def package_all(self, data_dir: str, release_tag: str) -> List[Dict[str, Any]]:
