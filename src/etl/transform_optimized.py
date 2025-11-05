@@ -87,38 +87,42 @@ def register_hash_functions(db_connection: duckdb.DuckDBPyConnection) -> None:
             import re
 
             # Handle range notation (e.g., "000001-00005" -> "1-5")
-            if '-' in value:
-                parts = value.split('-', 1)
+            if "-" in value:
+                parts = value.split("-", 1)
                 if len(parts) == 2:
-                    left = parts[0].lstrip('0') or '0'
-                    right = parts[1].lstrip('0') or '0'
+                    left = parts[0].lstrip("0") or "0"
+                    right = parts[1].lstrip("0") or "0"
                     return f"{left}-{right}"
 
             # Handle slash notation (e.g., "000001/D" -> "1/D")
-            if '/' in value:
-                match = re.match(r'^(0*)(\d+)(/.*)?$', value)
+            if "/" in value:
+                match = re.match(r"^(0*)(\d+)(/.*)?$", value)
                 if match:
-                    num = match.group(2) or '0'
-                    suffix = match.group(3) or ''
+                    num = match.group(2) or "0"
+                    suffix = match.group(3) or ""
                     return num + suffix
 
             # Handle numeric only (e.g., "000001" -> "1")
             if value.isdigit():
-                return value.lstrip('0') or '0'
+                return value.lstrip("0") or "0"
 
             # Non-numeric or mixed: return as-is
             return value
 
         # Check if function already exists before creating
         try:
-            db_connection.create_function("trim_leading_zeros", trim_leading_zeros_py, return_type="VARCHAR")
+            db_connection.create_function(
+                "trim_leading_zeros", trim_leading_zeros_py, return_type="VARCHAR"
+            )
         except Exception as func_err:
             if "already created" in str(func_err):
                 logger.debug("trim_leading_zeros function already exists, skipping")
             else:
                 raise
 
-        logger.debug("Hash functions and utility macros registered as SQL macros using MD5")
+        logger.debug(
+            "Hash functions and utility macros registered as SQL macros using MD5"
+        )
     except Exception as e:
         if "Catalog write-write conflict" in str(e):
             logger.debug(
@@ -345,7 +349,9 @@ def transform_national_individual_electoral_districts(
         "SELECT COUNT(*) FROM NationalIndividualElectoralDistrict WHERE Polygon IS NOT NULL"
     ).fetchone()[0]
 
-    logger.info(f"Transformed {row_count} national individual electoral districts ({polygon_count} with polygon data)")
+    logger.info(
+        f"Transformed {row_count} national individual electoral districts ({polygon_count} with polygon data)"
+    )
 
 
 def transform_postal_codes(
@@ -401,7 +407,7 @@ def transform_settlement_individual_electoral_districts(
             s.ID as Settlement_ID
         FROM staging_korzet sk
         JOIN County c ON sk.county_code = c.CountyCode
-        JOIN Settlement s ON sk.county_code = c.CountyCode AND sk.settlement_code = s.SettlementCode
+        JOIN Settlement s ON s.County_ID = c.ID AND sk.settlement_code = s.SettlementCode
         WHERE sk.run_tag = ?
         GROUP BY sk.county_code, sk.settlement_code, sk.tevk_code, c.ID, s.ID
         ON CONFLICT (ID) DO NOTHING
@@ -654,18 +660,33 @@ def transform_addresses_parallel(
         future_to_chunk = {future: chunk_num for chunk_num, future in futures}
 
         # Create global progress bar and individual chunk progress bars
-        with tqdm(total=total_count, desc="Overall progress", unit="rows", position=0,
-                  bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]') as overall_pbar, \
-             tqdm(total=len(futures), desc="Chunks completed", unit="chunk", position=1,
-                  bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]') as chunk_pbar:
-
+        with (
+            tqdm(
+                total=total_count,
+                desc="Overall progress",
+                unit="rows",
+                position=0,
+                bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]",
+            ) as overall_pbar,
+            tqdm(
+                total=len(futures),
+                desc="Chunks completed",
+                unit="chunk",
+                position=1,
+                bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]",
+            ) as chunk_pbar,
+        ):
             # Process chunks as they complete (not in order)
-            for future in concurrent.futures.as_completed([f for _, f in futures], timeout=300):
+            for future in concurrent.futures.as_completed(
+                [f for _, f in futures], timeout=300
+            ):
                 chunk_num = future_to_chunk[future]
                 try:
                     result = future.result()
                     completed_futures.append((chunk_num, result))
-                    rows_processed = min(chunk_size, total_count - (chunk_num * chunk_size))
+                    rows_processed = min(
+                        chunk_size, total_count - (chunk_num * chunk_size)
+                    )
                     overall_pbar.update(rows_processed)
                     chunk_pbar.update(1)
                 except concurrent.futures.TimeoutError:
@@ -701,19 +722,29 @@ def transform_addresses_parallel(
                 retry_futures.append((chunk_num, future))
 
             # Progress bar for retry attempts
-            with tqdm(total=len(retry_futures), desc="Retrying failed chunks", unit="chunk",
-                      bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]') as pbar:
+            with tqdm(
+                total=len(retry_futures),
+                desc="Retrying failed chunks",
+                unit="chunk",
+                bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]",
+            ) as pbar:
                 for chunk_num, future in retry_futures:
                     try:
-                        result = future.result(timeout=120)  # 2 minute timeout for retry
+                        result = future.result(
+                            timeout=120
+                        )  # 2 minute timeout for retry
                         completed_futures.append((chunk_num, result))
-                        logger.info(f"Chunk {chunk_num} completed successfully on retry")
+                        logger.info(
+                            f"Chunk {chunk_num} completed successfully on retry"
+                        )
                         pbar.update(1)
                     except concurrent.futures.TimeoutError:
                         logger.error(f"Chunk {chunk_num} failed again after retry")
                         pbar.update(1)
                     except Exception as e:
-                        logger.error(f"Chunk {chunk_num} failed on retry with error: {e}")
+                        logger.error(
+                            f"Chunk {chunk_num} failed on retry with error: {e}"
+                        )
                         pbar.update(1)
 
         # Log final results
@@ -758,7 +789,7 @@ def process_chunk_parallel(
             unit="rows",
             position=pbar_position,
             leave=False,
-            bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt}'
+            bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt}",
         )
 
     logger.info(
@@ -1213,7 +1244,7 @@ def fetch_staging_chunk_polars(
                  street_name, street_type, house_number, building, staircase
         LIMIT ? OFFSET ?
         """,
-        [run_tag, chunk_size, offset]
+        [run_tag, chunk_size, offset],
     ).fetch_arrow_table()
 
     # Convert Arrow to Polars DataFrame
@@ -1239,69 +1270,123 @@ def transform_chunk_polars(
     chunk_df = chunk_df.with_row_count(name="row_num", offset=1)
 
     # Trim leading zeros from address components using Polars map
-    chunk_df = chunk_df.with_columns([
-        pl.col("house_number").map_elements(apply_trim_leading_zeros, return_dtype=pl.Utf8).alias("HouseNumber"),
-        pl.col("building").map_elements(apply_trim_leading_zeros, return_dtype=pl.Utf8).alias("Building"),
-        pl.col("staircase").map_elements(apply_trim_leading_zeros, return_dtype=pl.Utf8).alias("Staircase"),
-    ])
+    chunk_df = chunk_df.with_columns(
+        [
+            pl.col("house_number")
+            .map_elements(apply_trim_leading_zeros, return_dtype=pl.Utf8)
+            .alias("HouseNumber"),
+            pl.col("building")
+            .map_elements(apply_trim_leading_zeros, return_dtype=pl.Utf8)
+            .alias("Building"),
+            pl.col("staircase")
+            .map_elements(apply_trim_leading_zeros, return_dtype=pl.Utf8)
+            .alias("Staircase"),
+        ]
+    )
 
     # Create struct for hash ID generation
-    chunk_df = chunk_df.with_columns([
-        pl.struct([
-            "county_code", "settlement_code", "street_name", "street_type",
-            "house_number", "building", "staircase", "postal_code"
-        ]).map_elements(apply_hash_address_id, return_dtype=pl.Utf8).alias("ID"),
-    ])
+    chunk_df = chunk_df.with_columns(
+        [
+            pl.struct(
+                [
+                    "county_code",
+                    "settlement_code",
+                    "street_name",
+                    "street_type",
+                    "house_number",
+                    "building",
+                    "staircase",
+                    "postal_code",
+                ]
+            )
+            .map_elements(apply_hash_address_id, return_dtype=pl.Utf8)
+            .alias("ID"),
+        ]
+    )
 
     # Generate foreign key hash IDs
-    chunk_df = chunk_df.with_columns([
-        pl.col("county_code").map_elements(apply_hash_county_id, return_dtype=pl.Utf8).alias("County_ID"),
-        pl.struct(["county_code", "settlement_code"]).map_elements(apply_hash_settlement_id, return_dtype=pl.Utf8).alias("Settlement_ID"),
-        pl.struct(["county_code", "oevk_code"]).map_elements(apply_hash_oevk_id, return_dtype=pl.Utf8).alias("NationalIndividualElectoralDistrict_ID"),
-        pl.struct(["county_code", "settlement_code", "tevk_code"]).map_elements(apply_hash_tevk_id, return_dtype=pl.Utf8).alias("SettlementIndividualElectoralDistrict_ID"),
-        pl.col("postal_code").cast(pl.Utf8).map_elements(apply_hash_postal_code_id, return_dtype=pl.Utf8).alias("PostalCode_ID"),
-        pl.struct(["county_code", "settlement_code", "oevk_code", "tevk_code", "polling_station_address"]).map_elements(apply_hash_polling_station_id, return_dtype=pl.Utf8).alias("PollingStation_ID"),
-    ])
+    chunk_df = chunk_df.with_columns(
+        [
+            pl.col("county_code")
+            .map_elements(apply_hash_county_id, return_dtype=pl.Utf8)
+            .alias("County_ID"),
+            pl.struct(["county_code", "settlement_code"])
+            .map_elements(apply_hash_settlement_id, return_dtype=pl.Utf8)
+            .alias("Settlement_ID"),
+            pl.struct(["county_code", "oevk_code"])
+            .map_elements(apply_hash_oevk_id, return_dtype=pl.Utf8)
+            .alias("NationalIndividualElectoralDistrict_ID"),
+            pl.struct(["county_code", "settlement_code", "tevk_code"])
+            .map_elements(apply_hash_tevk_id, return_dtype=pl.Utf8)
+            .alias("SettlementIndividualElectoralDistrict_ID"),
+            pl.col("postal_code")
+            .cast(pl.Utf8)
+            .map_elements(apply_hash_postal_code_id, return_dtype=pl.Utf8)
+            .alias("PostalCode_ID"),
+            pl.struct(
+                [
+                    "county_code",
+                    "settlement_code",
+                    "oevk_code",
+                    "tevk_code",
+                    "polling_station_address",
+                ]
+            )
+            .map_elements(apply_hash_polling_station_id, return_dtype=pl.Utf8)
+            .alias("PollingStation_ID"),
+        ]
+    )
 
     # Create FullAddress by concatenating components
-    chunk_df = chunk_df.with_columns([
-        pl.concat_str([
-            pl.col("street_name"),
-            pl.lit(" "),
-            pl.col("street_type").fill_null(""),
-            pl.lit(" "),
-            pl.col("HouseNumber"),
-            pl.lit(" "),
-            pl.col("Building").fill_null(""),
-            pl.lit(" "),
-            pl.col("Staircase").fill_null(""),
-        ]).str.replace_all(r"\s+", " ").str.strip_chars().alias("FullAddress"),
-    ])
+    chunk_df = chunk_df.with_columns(
+        [
+            pl.concat_str(
+                [
+                    pl.col("street_name"),
+                    pl.lit(" "),
+                    pl.col("street_type").fill_null(""),
+                    pl.lit(" "),
+                    pl.col("HouseNumber"),
+                    pl.lit(" "),
+                    pl.col("Building").fill_null(""),
+                    pl.lit(" "),
+                    pl.col("Staircase").fill_null(""),
+                ]
+            )
+            .str.replace_all(r"\s+", " ")
+            .str.strip_chars()
+            .alias("FullAddress"),
+        ]
+    )
 
     # Add Sequence and OriginalOrder
-    chunk_df = chunk_df.with_columns([
-        pl.col("row_num").alias("Sequence"),
-        (pl.col("row_num") + global_offset - 1).alias("OriginalOrder"),
-    ])
+    chunk_df = chunk_df.with_columns(
+        [
+            pl.col("row_num").alias("Sequence"),
+            (pl.col("row_num") + global_offset - 1).alias("OriginalOrder"),
+        ]
+    )
 
     # Select and rename columns to match Address table schema
-    result_df = chunk_df.select([
-        "ID",
-        "Sequence",
-        "OriginalOrder",
-        "FullAddress",
-        pl.col("street_name").alias("PublicSpaceName"),
-        pl.col("street_type").fill_null("").alias("PublicSpaceType"),
-        "HouseNumber",
-        "Building",
-        "Staircase",
-        "PostalCode_ID",
-        "PollingStation_ID",
-        "SettlementIndividualElectoralDistrict_ID",
-        "County_ID",
-        "Settlement_ID",
-        "NationalIndividualElectoralDistrict_ID",
-    ])
+    result_df = chunk_df.select(
+        [
+            "ID",
+            "Sequence",
+            "OriginalOrder",
+            "FullAddress",
+            pl.col("street_name").alias("PublicSpaceName"),
+            pl.col("street_type").fill_null("").alias("PublicSpaceType"),
+            "HouseNumber",
+            "Building",
+            "Staircase",
+            "PostalCode_ID",
+            "PollingStation_ID",
+            "SettlementIndividualElectoralDistrict_ID",
+            "County_ID",
+            "Settlement_ID",
+            "NationalIndividualElectoralDistrict_ID",
+        ]
+    )
 
     return result_df
 
@@ -1366,8 +1451,12 @@ def persist_chunk_to_duckdb(
         logger.error(f"  PollingStation_ID: {first_row['PollingStation_ID'][0]}")
         logger.error(f"  County_ID: {first_row['County_ID'][0]}")
         logger.error(f"  Settlement_ID: {first_row['Settlement_ID'][0]}")
-        logger.error(f"  SettlementIndividualElectoralDistrict_ID: {first_row['SettlementIndividualElectoralDistrict_ID'][0]}")
-        logger.error(f"  NationalIndividualElectoralDistrict_ID: {first_row['NationalIndividualElectoralDistrict_ID'][0]}")
+        logger.error(
+            f"  SettlementIndividualElectoralDistrict_ID: {first_row['SettlementIndividualElectoralDistrict_ID'][0]}"
+        )
+        logger.error(
+            f"  NationalIndividualElectoralDistrict_ID: {first_row['NationalIndividualElectoralDistrict_ID'][0]}"
+        )
         db_connection.unregister("temp_chunk_polars")
         raise
 
@@ -1408,7 +1497,7 @@ def transform_addresses_polars(
           AND postal_code != 0
           AND postal_code != '0'
           AND postal_code != ''""",
-        [run_tag]
+        [run_tag],
     ).fetchone()[0]
 
     total_chunks = (total_count + chunk_size - 1) // chunk_size
@@ -1425,7 +1514,9 @@ def transform_addresses_polars(
         global_order_start = offset + 1
 
         # Fetch chunk (DuckDB → Arrow → Polars)
-        chunk_df = fetch_staging_chunk_polars(db_connection, run_tag, offset, chunk_size)
+        chunk_df = fetch_staging_chunk_polars(
+            db_connection, run_tag, offset, chunk_size
+        )
 
         # Transform chunk (Polars vectorized operations)
         transformed_df = transform_chunk_polars(chunk_df, global_order_start)
