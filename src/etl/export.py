@@ -1021,7 +1021,17 @@ def export_tables_to_postgresql_csv(
                     END as center_wkt,
                     CASE
                         WHEN Polygon IS NOT NULL THEN
-                            'POLYGON((' || regexp_replace(Polygon, '([0-9.]+) ([0-9.]+)', '\\2 \\1', 'g') || '))'
+                            -- Swap lat/lon to lon/lat and auto-close polygon if needed
+                            CASE
+                                -- Check if polygon is already closed (first coord == last coord)
+                                WHEN split_part(Polygon, ',', 1) = split_part(Polygon, ',', -1) THEN
+                                    'POLYGON((' || regexp_replace(Polygon, '([0-9.]+) ([0-9.]+)', '\\2 \\1', 'g') || '))'
+                                ELSE
+                                    -- Auto-close: append first coordinate to the end
+                                    'POLYGON((' || regexp_replace(Polygon, '([0-9.]+) ([0-9.]+)', '\\2 \\1', 'g') || ',' ||
+                                    split_part(regexp_replace(split_part(Polygon, ',', 1), '([0-9.]+) ([0-9.]+)', '\\2 \\1', 'g'), ' ', 1) || ' ' ||
+                                    split_part(regexp_replace(split_part(Polygon, ',', 1), '([0-9.]+) ([0-9.]+)', '\\2 \\1', 'g'), ' ', 2) || '))'
+                            END
                         ELSE NULL
                     END as polygon_wkt,
                     to_uuid5(County_ID) as county_id
@@ -1544,35 +1554,7 @@ def generate_postgresql_import_script(
             )
             f.write("\n")
 
-        # Insert placeholder records
-        f.write("-- Step 3: Insert placeholder records for missing foreign keys\n")
-        placeholder_uuid = "'00000000-0000-0000-0000-000000000000'"
-        f.write(
-            f"INSERT INTO county (id, code, name) VALUES ({placeholder_uuid}, 'UNKNOWN', 'Unknown County') ON CONFLICT DO NOTHING;\n"
-        )
-        f.write(
-            f"INSERT INTO settlement (id, code, name, county_id) VALUES ({placeholder_uuid}, 'UNKNOWN', 'Unknown Settlement', {placeholder_uuid}) ON CONFLICT DO NOTHING;\n"
-        )
-
-        if use_postgis:
-            f.write(
-                f"INSERT INTO oevk (id, code, name, center, polygon, county_id) VALUES ({placeholder_uuid}, 'UNKNOWN', 'Unknown District', NULL, NULL, {placeholder_uuid}) ON CONFLICT DO NOTHING;\n"
-            )
-        else:
-            f.write(
-                f"INSERT INTO oevk (id, code, name, center, polygon, county_id) VALUES ({placeholder_uuid}, 'UNKNOWN', 'Unknown District', NULL, NULL, {placeholder_uuid}) ON CONFLICT DO NOTHING;\n"
-            )
-
-        f.write(
-            f"INSERT INTO tevk (id, code, name, county_id, settlement_id) VALUES ({placeholder_uuid}, 'UNKNOWN', 'Unknown District', {placeholder_uuid}, {placeholder_uuid}) ON CONFLICT DO NOTHING;\n"
-        )
-        f.write(
-            f"INSERT INTO postal_code (id, code) VALUES ({placeholder_uuid}, '0000') ON CONFLICT DO NOTHING;\n"
-        )
-        f.write(
-            f"INSERT INTO polling_station (id, address, tevk_id, county_id, settlement_id, oevk_id, latitude, longitude, geocoding_quality, geocoding_source, matched_address) VALUES ({placeholder_uuid}, 'Unknown Polling Station Address', {placeholder_uuid}, {placeholder_uuid}, {placeholder_uuid}, {placeholder_uuid}, NULL, NULL, NULL, NULL, NULL) ON CONFLICT DO NOTHING;\n"
-        )
-        f.write("\n")
+        # Placeholder records removed - database verification shows no NULL or invalid foreign keys
 
         # Define import order (respecting foreign key dependencies)
         import_order = [

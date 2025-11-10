@@ -19,3 +19,4 @@ venv/
 /repomix-output.xml
 output
 *.sql.gz
+nominatim.tar.gz

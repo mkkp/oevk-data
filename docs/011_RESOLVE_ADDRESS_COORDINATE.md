@@ -1255,7 +1255,7 @@ def handle_geocode_command(args):
 
 
 def setup_nominatim_service(force_reimport: bool = False):
-    """Setup Nominatim service using docker-compose."""
+    """Setup Nominatim service using docker compose."""
     
     logger.info("Setting up Nominatim geocoding service...")
     
@@ -1272,11 +1272,11 @@ def setup_nominatim_service(force_reimport: bool = False):
     
     if force_reimport:
         logger.info("Stopping existing Nominatim service...")
-        subprocess.run(["docker-compose", "stop", "nominatim"], check=False)
-        subprocess.run(["docker-compose", "rm", "-f", "nominatim"], check=False)
+        subprocess.run(["docker", "compose", "stop", "nominatim"], check=False)
+        subprocess.run(["docker", "compose", "rm", "-f", "nominatim"], check=False)
     
     logger.info("Starting Nominatim service (this may take 1-2 hours for first import)...")
-    subprocess.run(["docker-compose", "up", "-d", "nominatim"], check=True)
+    subprocess.run(["docker", "compose", "up", "-d", "nominatim"], check=True)
     
     logger.info("Waiting for Nominatim to be ready...")
     # Wait for healthcheck to pass
