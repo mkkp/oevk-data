@@ -85,10 +85,21 @@ class Config:
                 "batch_size": 100,
                 "rate_limit": 0,  # 0 = no limit for local instance
                 "timeout": 30,
+                "max_workers": 32,  # Number of parallel geocoding threads
                 "cache_dir": "data/geocoding_cache",
-                "retry_attempts": 3,
+                "retry_attempts": 1,
                 "min_quality": "street",
                 "similarity_threshold": 0.6,
+            },
+            # HERE Geocoding API settings
+            "here": {
+                "enabled": False,  # Disabled by default - enable with HERE_ENABLED=true
+                "api_key": None,  # Set via HERE_API_KEY environment variable
+                "base_url": "https://geocode.search.hereapi.com/v1",
+                "timeout": 30,
+                "rate_limit": 5,  # 5 req/sec for free tier
+                "max_workers": 4,  # Conservative for API
+                "min_quality_to_retry": "settlement",  # Retry failed/settlement/street
             },
             # Geocoding settings
             "geocoding": {
@@ -143,7 +154,9 @@ class Config:
 
         use_polars_transform = os.getenv("USE_POLARS_TRANSFORM")
         if use_polars_transform is not None:
-            self._config["processing"]["use_polars_transform"] = use_polars_transform.lower() == "true"
+            self._config["processing"]["use_polars_transform"] = (
+                use_polars_transform.lower() == "true"
+            )
 
         # Database settings
         db_memory_limit = os.getenv("DB_MEMORY_LIMIT")
@@ -246,6 +259,10 @@ class Config:
         if nominatim_timeout:
             self._config["nominatim"]["timeout"] = int(nominatim_timeout)
 
+        nominatim_max_workers = os.getenv("NOMINATIM_MAX_WORKERS")
+        if nominatim_max_workers:
+            self._config["nominatim"]["max_workers"] = int(nominatim_max_workers)
+
         nominatim_cache_dir = os.getenv("NOMINATIM_CACHE_DIR")
         if nominatim_cache_dir:
             self._config["nominatim"]["cache_dir"] = nominatim_cache_dir
@@ -260,12 +277,45 @@ class Config:
 
         nominatim_similarity = os.getenv("NOMINATIM_SIMILARITY_THRESHOLD")
         if nominatim_similarity:
-            self._config["nominatim"]["similarity_threshold"] = float(nominatim_similarity)
+            self._config["nominatim"]["similarity_threshold"] = float(
+                nominatim_similarity
+            )
+
+        # HERE Geocoding settings
+        here_enabled = os.getenv("HERE_ENABLED")
+        if here_enabled is not None:
+            self._config["here"]["enabled"] = here_enabled.lower() == "true"
+
+        here_api_key = os.getenv("HERE_API_KEY")
+        if here_api_key:
+            self._config["here"]["api_key"] = here_api_key
+
+        here_base_url = os.getenv("HERE_BASE_URL")
+        if here_base_url:
+            self._config["here"]["base_url"] = here_base_url
+
+        here_timeout = os.getenv("HERE_TIMEOUT")
+        if here_timeout:
+            self._config["here"]["timeout"] = int(here_timeout)
+
+        here_rate_limit = os.getenv("HERE_RATE_LIMIT")
+        if here_rate_limit is not None:
+            self._config["here"]["rate_limit"] = int(here_rate_limit)
+
+        here_max_workers = os.getenv("HERE_MAX_WORKERS")
+        if here_max_workers:
+            self._config["here"]["max_workers"] = int(here_max_workers)
+
+        here_min_quality = os.getenv("HERE_MIN_QUALITY_TO_RETRY")
+        if here_min_quality:
+            self._config["here"]["min_quality_to_retry"] = here_min_quality
 
         # Geocoding PostGIS setting
         geocoding_use_postgis = os.getenv("GEOCODING_USE_POSTGIS")
         if geocoding_use_postgis is not None:
-            self._config["geocoding"]["use_postgis"] = geocoding_use_postgis.lower() == "true"
+            self._config["geocoding"]["use_postgis"] = (
+                geocoding_use_postgis.lower() == "true"
+            )
 
     def _create_directories(self) -> None:
         """Create required directories if they don't exist."""

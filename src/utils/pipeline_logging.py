@@ -42,7 +42,10 @@ def setup_logging(
                 "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
                 "datefmt": "%Y-%m-%d %H:%M:%S",
             },
-            "simple": {"format": "%(levelname)s: %(message)s"},
+            "simple": {
+                "format": "%(asctime)s - %(levelname)s: %(message)s",
+                "datefmt": "%Y-%m-%d %H:%M:%S",
+            },
             "pipeline": {
                 "format": "%(asctime)s - %(levelname)s - [%(name)s] %(message)s",
                 "datefmt": "%Y-%m-%d %H:%M:%S",

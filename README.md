@@ -260,23 +260,56 @@ cp .env.example .env
 # - DATABASE_PATH=data/oevk.db
 ```
 
-#### Step 3: Set Up Geocoding Service (One-Time, ~2 hours)
+#### Step 3: Set Up Geocoding Service (One-Time)
+
+**Option A: Fresh Import (1-2 hours) - First Time**
 
 ```bash
 # Start Docker Desktop first, then:
 
-# Download and import Hungary OSM data into Nominatim
-python src/cli.py geocode setup
+# Download and import Hungary OSM data into Nominatim with verification
+python src/cli.py geocode setup --verify --create-dump
 
 # This will:
 # - Download ~286 MB of Hungary OSM data
-# - Import data into Nominatim (takes 1-2 hours)
+# - Import data into Nominatim with optimized PostgreSQL settings (45-90 min)
+# - Show real-time progress monitoring
+# - Verify database with test queries
+# - Create nominatim.tar.gz dump for future fast setup (~2-4 GB)
 # - Start geocoding service on http://localhost:8081
 
-# Monitor progress (optional)
-docker logs -f oevk-nominatim
+# Progress is automatically monitored and displayed
+# You'll see stages: Download → Import → Indexing → Ready
+```
 
-# Wait for message: "Nominatim service is ready!"
+**Option B: Restore from Dump (5-10 minutes) - Subsequent Times**
+
+```bash
+# If you have nominatim.tar.gz from a previous setup or team member:
+python src/cli.py geocode setup --use-dump
+
+# This will:
+# - Restore pre-built database from nominatim.tar.gz
+# - Start service in 5-10 minutes instead of 1-2 hours
+# - Skip the lengthy OSM import process
+
+# Perfect for:
+# - Team members getting started
+# - Rebuilding after system reinstall
+# - Quick recovery from failures
+```
+
+**Advanced Options:**
+
+```bash
+# Monitor progress in separate terminal
+python scripts/monitor_nominatim_import.py
+
+# Force clean reimport (destroys existing database)
+python src/cli.py geocode setup --force-reimport --verify --create-dump
+
+# Quick setup without monitoring (runs in background)
+python src/cli.py geocode setup --no-monitor
 ```
 
 #### Step 4: Run Complete Pipeline (~3-5 minutes)
@@ -531,7 +564,7 @@ postgresql://oevk:oevk@localhost:5432/oevk
 
 ```bash
 # Set up local PostgreSQL with PostGIS
-docker-compose up -d postgresql
+docker compose up -d postgresql
 
 # Wait for PostgreSQL to be ready
 sleep 10
@@ -616,7 +649,7 @@ To completely reset and start fresh:
 
 ```bash
 # Stop all services
-docker-compose down
+docker compose down
 
 # Remove all data (WARNING: This deletes everything!)
 rm -rf data/                    # All databases and staging files
@@ -662,7 +695,7 @@ rm -rf data/staging/*
 python src/cli.py run --stages ingest --run-tag $(date +%Y%m%d)
 
 # Reset Nominatim (re-import OSM data)
-docker-compose down
+docker compose down
 docker volume rm oevk-data_nominatim_data
 python src/cli.py geocode setup --force-reimport
 ```
@@ -703,7 +736,7 @@ docker ps -a | grep nominatim
 docker logs oevk-nominatim
 
 # Restart service
-docker-compose restart nominatim
+docker compose restart nominatim
 
 # Force reimport if corrupted
 python src/cli.py geocode setup --force-reimport
@@ -1244,7 +1277,7 @@ export POSTGRESQL_USE_POSTGIS=false
 
 ```bash
 # Use provided docker-compose.yml with PostGIS image
-docker-compose up -d
+docker compose up -d
 
 # This starts PostgreSQL 15 with PostGIS 3.3 extension
 # Database: oevk_data
@@ -2071,8 +2104,9 @@ docker ps -a | grep nominatim
 docker logs oevk-nominatim
 
 # Restart container
-docker-compose restart nominatim
+docker compose restart nominatim
 
+# Force re-import if service is corrupted
 # Force reimport (if data is corrupted)
 python src/cli.py geocode setup --force-reimport
 ```

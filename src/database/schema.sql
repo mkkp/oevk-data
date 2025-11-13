@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS PostalCode_Settlement (
 -- PollingStation table
 CREATE TABLE IF NOT EXISTS PollingStation (
     ID TEXT PRIMARY KEY, -- md5(CountyCode|SettlementCode|OEVK|TEVK|PollingStationAddress)
+    PollingStationCode VARCHAR,
     PollingStationAddress TEXT NOT NULL,
     SettlementIndividualElectoralDistrict_ID TEXT NOT NULL,
     County_ID TEXT NOT NULL,
