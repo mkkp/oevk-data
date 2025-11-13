@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import re
 import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -909,8 +910,75 @@ class NominatimGeocoder:
             self.stats["interpolated"] += interpolated_count
             self.stats["street"] -= interpolated_count
 
+        # Save interpolated results to cache
+        self._save_interpolated_to_cache(results_dict, address_metadata)
+
         # Convert back to list
         return list(results_dict.values())
+
+    def _save_interpolated_to_cache(self, results_dict: Dict, address_metadata: Dict):
+        """Save interpolated results to cache for future use (batch mode for performance)."""
+        logger.info("Saving interpolated results to cache...")
+
+        # Collect all interpolated results to save in batch
+        batch_data = []
+        for addr_id, result in results_dict.items():
+            # Only save interpolated results (not original geocoded ones)
+            if result.quality != GeocodingQuality.INTERPOLATED:
+                continue
+
+            # Get address metadata to generate cache key
+            if addr_id not in address_metadata:
+                continue
+
+            metadata = address_metadata[addr_id]
+            cache_key = self._get_cache_key(
+                {
+                    "SettlementName": metadata["settlement"],
+                    "StreetName": metadata["street"],
+                    "HouseNumber": metadata["house_number"],
+                }
+            )
+
+            batch_data.append(
+                (
+                    cache_key,
+                    result.canonical_address_id,
+                    result.latitude,
+                    result.longitude,
+                    result.quality.value,
+                    result.source,
+                    result.osm_type,
+                    result.osm_id,
+                    result.matched_address,
+                    datetime.now().isoformat(),
+                )
+            )
+
+        if not batch_data:
+            logger.info("No interpolated results to save to cache")
+            return
+
+        # Batch insert to cache database
+        try:
+            conn = sqlite3.connect(str(self.cache_db_path))
+            cursor = conn.cursor()
+
+            cursor.executemany(
+                """
+                INSERT OR REPLACE INTO geocoding_cache
+                (cache_key, canonical_address_id, latitude, longitude, quality,
+                 source, osm_type, osm_id, matched_address, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                batch_data,
+            )
+
+            conn.commit()
+            conn.close()
+            logger.info(f"Saved {len(batch_data):,} interpolated results to cache")
+        except sqlite3.Error as e:
+            logger.warning(f"Failed to batch save interpolated results to cache: {e}")
 
     def _extract_house_number(self, house_number_str: str) -> Optional[int]:
         """
@@ -1317,6 +1385,36 @@ def geocode_canonical_addresses(
             "skipped": True,
             "message": "No cache available",
         }
+
+    # Apply post-processing interpolation to improve street-level matches
+    # This runs even in cache-only mode to compute interpolated coordinates
+    logger.info("Applying post-processing interpolation to improve quality...")
+
+    # Convert results_df to list of GeocodingResult objects for interpolation
+    results_list = []
+    for row in results_df.iter_rows(named=True):
+        results_list.append(
+            GeocodingResult(
+                canonical_address_id=row["ID"],
+                latitude=row.get("Latitude"),
+                longitude=row.get("Longitude"),
+                quality=GeocodingQuality(row["GeocodingQuality"])
+                if row.get("GeocodingQuality")
+                else GeocodingQuality.FAILED,
+                source=row.get("GeocodingSource", "unknown"),
+                osm_type=None,
+                osm_id=None,
+                matched_address=None,
+            )
+        )
+
+    # Apply interpolation
+    interpolated_results = geocoder._interpolate_street_addresses(
+        results_list, addresses_df
+    )
+
+    # Convert back to DataFrame
+    results_df = geocoder._results_to_dataframe(interpolated_results)
 
     # Update database
     logger.info("Updating database with geocoding results...")
@@ -1872,8 +1970,6 @@ class PollingStationGeocoder:
         self.nominatim_geocoder = NominatimGeocoder(config)
 
         # Institution keywords to remove for fuzzy search
-        import re
-
         institution_keywords = [
             "általános iskola",
             "gimnázium",
@@ -2262,18 +2358,38 @@ def geocode_polling_stations(
     logger.info("Updating database with polling station geocoding results...")
 
     db_connection.register("polling_station_results", results_df)
+
+    # DuckDB doesn't allow UPDATE or DROP on tables with foreign key references
+    # Workaround: DELETE all rows then INSERT updated data (preserves foreign key integrity since IDs don't change)
+
+    # Create temp table with merged geocoding data
     db_connection.execute("""
-        UPDATE PollingStation
-        SET
-            Latitude = psr.Latitude,
-            Longitude = psr.Longitude,
-            GeocodingQuality = psr.GeocodingQuality,
-            GeocodingSource = psr.GeocodingSource,
-            GeocodedAt = psr.GeocodedAt,
-            MatchedAddress = psr.MatchedAddress
-        FROM polling_station_results psr
-        WHERE PollingStation.ID = psr.ID
+        CREATE OR REPLACE TEMP TABLE PollingStation_updated AS
+        SELECT
+            ps.ID,
+            ps.PollingStationCode,
+            ps.PollingStationAddress,
+            ps.SettlementIndividualElectoralDistrict_ID,
+            ps.County_ID,
+            ps.Settlement_ID,
+            ps.NationalIndividualElectoralDistrict_ID,
+            COALESCE(psr.Latitude, ps.Latitude) as Latitude,
+            COALESCE(psr.Longitude, ps.Longitude) as Longitude,
+            COALESCE(psr.GeocodingQuality, ps.GeocodingQuality) as GeocodingQuality,
+            COALESCE(psr.GeocodingSource, ps.GeocodingSource) as GeocodingSource,
+            COALESCE(psr.GeocodedAt, ps.GeocodedAt) as GeocodedAt,
+            COALESCE(psr.MatchedAddress, ps.MatchedAddress) as MatchedAddress
+        FROM PollingStation ps
+        LEFT JOIN polling_station_results psr ON ps.ID = psr.ID
     """)
+
+    # Delete all rows and reinsert with updated data (foreign key references stay valid because IDs are unchanged)
+    db_connection.execute("DELETE FROM PollingStation")
+    db_connection.execute(
+        "INSERT INTO PollingStation SELECT * FROM PollingStation_updated"
+    )
+    db_connection.execute("DROP TABLE PollingStation_updated")
+
     db_connection.unregister("polling_station_results")
 
     logger.info("Polling station geocoding complete")

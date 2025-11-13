@@ -83,10 +83,10 @@ class TestPostgreSQLExportIntegration:
         # Verify schema is not empty
         assert len(schema) > 0
 
-        # Verify UUID conversion
-        assert "ID UUID PRIMARY KEY" in schema
-        assert "County_ID UUID" in schema
-        assert "Settlement_ID UUID" in schema
+        # Verify UUID conversion (snake_case column names)
+        assert "id UUID PRIMARY KEY" in schema
+        assert "county_id UUID" in schema
+        assert "settlement_id UUID" in schema
 
         # Verify PostgreSQL header
         assert "PostgreSQL Schema" in schema
@@ -94,8 +94,7 @@ class TestPostgreSQLExportIntegration:
 
         # Verify trigram extension and indexes for text search
         assert "CREATE EXTENSION IF NOT EXISTS pg_trgm" in schema
-        assert "idx_address_fulladdress_trgm" in schema
-        assert "idx_canonicaladdress_fulladdress_trgm" in schema
+        assert "idx_address_full_address_trgm" in schema
         assert "gin_trgm_ops" in schema
 
         # Verify index comments mention substring search

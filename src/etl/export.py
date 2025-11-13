@@ -300,6 +300,7 @@ def generate_postgresql_schema():
         r"\bCenter\b": "center",
         r"\bPolygon\b": "polygon",
         r"\bPostalCode\b": "postal_code",
+        r"\bPollingStationCode\b": "polling_station_code",
         r"\bPollingStationAddress\b": "polling_station_address",
         r"\bLatitude\b": "latitude",
         r"\bLongitude\b": "longitude",
@@ -350,7 +351,8 @@ def generate_postgresql_schema():
     # postal_code column (in postal_code table)
     schema = re.sub(r"    postal_code TEXT UNIQUE", "    code TEXT UNIQUE", schema)
 
-    # polling_station column
+    # polling_station columns
+    schema = re.sub(r"\bpolling_station_code\b", "code", schema)
     schema = re.sub(r"\bpolling_station_address\b", "address", schema)
 
     # public_space_name column (in public_space_name table)
@@ -413,6 +415,10 @@ def generate_postgresql_schema():
     schema = re.sub(r"_id TEXT\b", "_id UUID", schema)
     # Pattern: _id TEXT, -> _id UUID, (with comma)
     schema = re.sub(r"_id TEXT,", "_id UUID,", schema)
+
+    # Convert polling_station code column from VARCHAR to TEXT NOT NULL
+    # Pattern: code VARCHAR, -> code TEXT NOT NULL,
+    schema = re.sub(r"\bcode VARCHAR,", "code TEXT NOT NULL,", schema)
 
     # Convert OEVK center and polygon to PostGIS GEOMETRY types if enabled
     if use_postgis:
@@ -956,6 +962,7 @@ def export_tables_to_postgresql_csv(
             "OEVK": "code",  # NationalIndividualElectoralDistrict
             "TEVK": "code",  # SettlementIndividualElectoralDistrict
             "PostalCode": "code",  # PostalCode table
+            "PollingStationCode": "code",  # PollingStation table
             "PollingStationAddress": "address",
             "CountyCode": "code",
             "CountyName": "name",
@@ -1644,7 +1651,7 @@ def generate_postgresql_import_script(
                     f.write(f"\\echo 'Importing {pg_table}...'\n")
                     # PostgreSQL snake_case naming
                     f.write(
-                        f"\\copy {pg_table} (id, address, tevk_id, county_id, settlement_id, oevk_id, latitude, longitude, geocoding_quality, geocoding_source, matched_address) FROM '{csv_dir}/{csv_file}' WITH (FORMAT CSV, HEADER, NULL '');\n"
+                        f"\\copy {pg_table} (id, code, address, tevk_id, county_id, settlement_id, oevk_id, latitude, longitude, geocoding_quality, geocoding_source, matched_address) FROM '{csv_dir}/{csv_file}' WITH (FORMAT CSV, HEADER, NULL '');\n"
                     )
                 else:
                     f.write(f"\\echo 'Importing {pg_table}...'\n")

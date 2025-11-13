@@ -1,11 +1,25 @@
 """Optimized transformation logic for converting staging data to normalized target tables."""
 
-import duckdb
-import time
 import concurrent.futures
-from typing import List, Tuple, Optional
+import time
+from typing import List, Optional, Tuple
+
+import duckdb
 import polars as pl
 from tqdm import tqdm
+
+from src.etl.deduplicate import AddressDeduplicator
+from src.etl.hashing_polars import (
+    apply_hash_address_id,
+    apply_hash_county_id,
+    apply_hash_oevk_id,
+    apply_hash_polling_station_id,
+    apply_hash_postal_code_id,
+    apply_hash_settlement_id,
+    apply_hash_tevk_id,
+)
+from src.etl.string_ops_polars import apply_trim_leading_zeros
+from src.utils.config import get_config
 
 # Hash functions are now implemented inline using DuckDB's built-in functions
 # from src.etl.hashing import (
@@ -22,18 +36,6 @@ from tqdm import tqdm
 #     hash_address_id,
 # )
 from src.utils.pipeline_logging import get_logger
-from src.utils.config import get_config
-from src.etl.deduplicate import AddressDeduplicator
-from src.etl.hashing_polars import (
-    apply_hash_address_id,
-    apply_hash_county_id,
-    apply_hash_settlement_id,
-    apply_hash_oevk_id,
-    apply_hash_tevk_id,
-    apply_hash_postal_code_id,
-    apply_hash_polling_station_id,
-)
-from src.etl.string_ops_polars import apply_trim_leading_zeros
 
 logger = get_logger(__name__)
 
@@ -205,9 +207,9 @@ def transform_all_optimized(
         # To enable actual geocoding, run: python src/cli.py geocode run
         geocode_canonical_addresses(db_connection, run_tag, update_from_cache=True)
 
-        # Geocode polling stations - skipped by default (nominatim.enabled=False)
-        # To enable: set NOMINATIM_ENABLED=true or run: python src/cli.py geocode run
-        geocode_polling_stations(db_connection, run_tag)
+        # Geocode polling stations - use cache only by default (no Nominatim calls)
+        # To enable actual geocoding, run: python src/cli.py geocode run
+        geocode_polling_stations(db_connection, run_tag, update_from_cache=True)
     except Exception as e:
         logger.warning(f"Geocoding failed but continuing: {e}")
 
@@ -431,7 +433,7 @@ def transform_polling_stations(
     db_connection.execute(
         """
         INSERT INTO PollingStation (
-            ID, PollingStationAddress, SettlementIndividualElectoralDistrict_ID,
+            ID, PollingStationCode, PollingStationAddress, SettlementIndividualElectoralDistrict_ID,
             County_ID, Settlement_ID, NationalIndividualElectoralDistrict_ID
         )
         SELECT
@@ -439,6 +441,7 @@ def transform_polling_stations(
                 county_code, settlement_code, oevk_code,
                 COALESCE(tevk_code, '-'), TRIM(polling_station_address)
             ) as ID,
+            ANY_VALUE(TRIM(polling_station_code)) as PollingStationCode,
             TRIM(polling_station_address) as PollingStationAddress,
             hash_tevk_id(county_code, settlement_code, COALESCE(tevk_code, '-')) as SettlementIndividualElectoralDistrict_ID,
             hash_county_id(county_code) as County_ID,
